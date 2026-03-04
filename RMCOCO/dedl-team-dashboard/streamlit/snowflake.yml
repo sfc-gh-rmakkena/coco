@@ -1,0 +1,14 @@
+definition_version: 2
+entities:
+  dedl_team_dashboard:
+    type: streamlit
+    identifier:
+      name: DEDL_TEAM_DASHBOARD
+      database: TEMP
+      schema: AI_PSE_IMPACT
+    query_warehouse: PSE_WH
+    main_file: streamlit_app.py
+    title: "DE/DL Team Dashboard"
+    artifacts:
+      - streamlit_app.py
+      - environment.yml
