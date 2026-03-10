@@ -1,12 +1,32 @@
 import streamlit as st
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 import plotly.express as px
 import pandas as pd
 import os
 import snowflake.connector
 import urllib.parse
+import re
 
 st.set_page_config(page_title="DE/DL Team Engagements", layout="wide")
+
+st.markdown("""
+<style>
+    .metric-card { border-radius: 12px; padding: 20px 24px; text-align: center; }
+    .metric-card .label { font-size: 14px; font-weight: 500; opacity: 0.8; margin-bottom: 4px; }
+    .metric-card .value { font-size: 36px; font-weight: 700; line-height: 1.2; }
+    .metric-neutral { background: #23262b; border: 1px solid #3a3f47; }
+    .metric-neutral .value { color: #ffffff; }
+    .metric-green { background: #0a2e1a; border: 1px solid #21c354; }
+    .metric-green .label { color: #21c354; }
+    .metric-green .value { color: #21c354; }
+    .metric-red { background: #2e0a0a; border: 1px solid #ff4b4b; }
+    .metric-red .label { color: #ff4b4b; }
+    .metric-red .value { color: #ff4b4b; }
+    .metric-amber { background: #2e2400; border: 1px solid #f59e0b; }
+    .metric-amber .label { color: #f59e0b; }
+    .metric-amber .value { color: #f59e0b; }
+</style>
+""", unsafe_allow_html=True)
 
 ENGINEER_LIST = {
     "Rithesh Makkena": ["Anika Shahi", "Chandra Nayak", "Chris Atkinson", "Chris Cardillo", "Kelsey Hammock", "Kesav Rayaprolu", "Nagesh Cherukuri", "Naveen Alan Thomas", "Niels ter Keurs", "Prash Medirattaa", "Randy Pettus", "Rithesh Makkena", "Sam Mittal", "Shawn Namdar", "Varun Kumar", "Venkat Suru", "Venkatesh Sekar"],
@@ -17,6 +37,7 @@ ENGINEER_LIST = {
     "Gopal Raghavan": ["Akash Bhatt", "Anthony Alteirac", "Dave Freriks", "David Richert", "Gopal Raghavan", "Mayur Mahadeshwar"]
 }
 
+@st.cache_resource
 def get_connection():
     try:
         from snowflake.snowpark.context import get_active_session
@@ -137,7 +158,7 @@ def build_bulk_ai_prompt(df):
         eacv = row.get('EACV', 0) or 0
         features = row.get('KEY_FEATURES', '') or 'None'
         engineer = row.get('ENGINEER', 'Unknown')
-        summary_data.append(f"- {account} | Stage: {stage} | EACV: ${eacv:,.0f} | Features: {features[:60]} | PSE: {engineer}")
+        summary_data.append(f"- {account} | Stage: {stage} | EACV: ${eacv:,.0f} | Features: {features[:400]} | PSE: {engineer}")
     
     use_cases_text = "\n".join(summary_data)
     
@@ -180,6 +201,8 @@ Include 4-5 specific accounts with clear action items.
 - List 5 specific next action items with owner and timeline
 - Prioritize by EACV impact
 
+IMPORTANT: Always reference EACV dollar amounts in your narrative. Quantify the pipeline at risk, wins by dollar value, and prioritize action items by EACV impact.
+
 Keep response under 350 words. Be direct and actionable."""
 
 def build_usecase_ai_prompt(row):
@@ -203,8 +226,8 @@ def build_usecase_ai_prompt(row):
 - Key Features: {features}
 - PSE: {engineer}
 - Technical Use Case: {tech_use_case}
-- SE Comments: {comments[:200] if comments else 'None'}
-- Next Steps: {next_steps[:200] if next_steps else 'None'}
+- SE Comments: {comments[:400] if comments else 'None'}
+- Next Steps: {next_steps[:400] if next_steps else 'None'}
 
 **REQUIRED OUTPUT FORMAT (use these EXACT section headers):**
 
@@ -219,6 +242,8 @@ def build_usecase_ai_prompt(row):
 **Action Items:**
 - 3 specific next steps to drive success with owner and timeline
 - Include any additional DE features that could benefit this account
+
+IMPORTANT: Always reference the EACV dollar amount in your narrative — quantify the opportunity size and its implications.
 
 Keep response under 200 words. Be specific and actionable."""
 
@@ -247,11 +272,11 @@ def build_weekly_usecase_ai_prompt(row):
 - Key Features: {features}
 - Technical Use Case: {tech_use_case}
 - GVP: {gvp} | Theater: {theater}
-- SE Comments: {se_comments[:300] if se_comments else 'None'}
-- Implementation Comments: {impl_comments[:300] if impl_comments else 'None'}
-- Next Steps: {next_steps[:300] if next_steps else 'None'}
-- Specialist Comments: {specialist[:200] if specialist else 'None'}
-- Partner Comments: {partner[:200] if partner else 'None'}
+- SE Comments: {se_comments[:400] if se_comments else 'None'}
+- Implementation Comments: {impl_comments[:400] if impl_comments else 'None'}
+- Next Steps: {next_steps[:400] if next_steps else 'None'}
+- Specialist Comments: {specialist[:400] if specialist else 'None'}
+- Partner Comments: {partner[:400] if partner else 'None'}
 
 **REQUIRED OUTPUT FORMAT (use these EXACT section headers):**
 
@@ -266,6 +291,8 @@ def build_weekly_usecase_ai_prompt(row):
 **Action Items:**
 - 3 specific next steps to drive success with owner and timeline
 - Include any additional DE features that could benefit this account
+
+IMPORTANT: Always reference the EACV dollar amount in your narrative — quantify the opportunity size and its implications.
 
 Keep response under 200 words. Be specific and actionable."""
 
@@ -353,6 +380,168 @@ def generate_ai_summary(prompt):
     except Exception as e:
         return f"Error generating summary: {str(e)}"
 
+def md_to_rich_html(md_text):
+    lines = md_text.split("\n")
+    html_parts = []
+    in_list = False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if in_list:
+                html_parts.append("</ul>")
+                in_list = False
+            html_parts.append("<br>")
+            continue
+        heading_match = re.match(r'^(#{1,4})\s+(.*)', stripped)
+        if heading_match:
+            if in_list:
+                html_parts.append("</ul>")
+                in_list = False
+            level = len(heading_match.group(1))
+            text = heading_match.group(2)
+            text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+            colors = {1: "#29B5E8", 2: "#29B5E8", 3: "#f59e0b", 4: "#f59e0b"}
+            sizes = {1: "22px", 2: "18px", 3: "16px", 4: "15px"}
+            html_parts.append(f'<div style="font-size:{sizes.get(level,"15px")};font-weight:700;color:{colors.get(level,"#29B5E8")};margin:16px 0 8px 0;border-bottom:1px solid #3a3f47;padding-bottom:6px">{text}</div>')
+            continue
+        numbered_match = re.match(r'^(\d+)\.\s+(.*)', stripped)
+        if numbered_match and not stripped.startswith("- "):
+            if in_list:
+                html_parts.append("</ul>")
+                in_list = False
+            text = numbered_match.group(2)
+            text = re.sub(r'\*\*(.+?)\*\*', r'<strong style="color:#29B5E8">\1</strong>', text)
+            text = re.sub(r'__(.*?)__', r'<u>\1</u>', text)
+            html_parts.append(f'<div style="font-size:16px;font-weight:700;color:#f59e0b;margin:14px 0 6px 0">{numbered_match.group(1)}. {text}</div>')
+            continue
+        bullet_match = re.match(r'^[-*]\s+(.*)', stripped)
+        sub_bullet_match = re.match(r'^\s+[-*]\s+(.*)', line)
+        if sub_bullet_match:
+            text = sub_bullet_match.group(1)
+            text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+            text = re.sub(r'__(.*?)__', r'<u>\1</u>', text)
+            html_parts.append(f'<li style="margin-left:24px;margin-bottom:4px;color:#d1d5db;font-size:14px;list-style-type:circle">{text}</li>')
+            continue
+        if bullet_match:
+            if not in_list:
+                html_parts.append('<ul style="margin:4px 0;padding-left:20px">')
+                in_list = True
+            text = bullet_match.group(1)
+            text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+            text = re.sub(r'__(.*?)__', r'<u>\1</u>', text)
+            html_parts.append(f'<li style="margin-bottom:6px;color:#e5e7eb;font-size:14px">{text}</li>')
+            continue
+        if in_list:
+            html_parts.append("</ul>")
+            in_list = False
+        stripped = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', stripped)
+        stripped = re.sub(r'__(.*?)__', r'<u>\1</u>', stripped)
+        html_parts.append(f'<p style="margin:4px 0;color:#e5e7eb;font-size:14px">{stripped}</p>')
+    if in_list:
+        html_parts.append("</ul>")
+    return "\n".join(html_parts)
+
+def render_rich_ai_summary(ai_result, summary_id="ai_summary"):
+    rich_html = md_to_rich_html(ai_result)
+    container_html = f'''
+    <div id="{summary_id}_container" style="background:#1a1d23;border:1px solid #3a3f47;border-radius:12px;padding:24px 28px;margin:12px 0;position:relative">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+            <span style="font-size:12px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:1px">AI Analysis</span>
+            <button onclick="
+                var el = document.getElementById('{summary_id}_content');
+                var range = document.createRange();
+                range.selectNodeContents(el);
+                var sel = window.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+                document.execCommand('copy');
+                sel.removeAllRanges();
+                this.innerText='Copied!';
+                this.style.background='#21c354';
+                setTimeout(function(){{ document.querySelector('[data-copy-btn={summary_id}]').innerText='Copy for Slides / Email'; document.querySelector('[data-copy-btn={summary_id}]').style.background='#29B5E8'; }}, 2000);
+            " data-copy-btn="{summary_id}" style="background:#29B5E8;color:#fff;border:none;border-radius:6px;padding:6px 16px;font-size:12px;font-weight:600;cursor:pointer;transition:background 0.2s">Copy for Slides / Email</button>
+        </div>
+        <div id="{summary_id}_content" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+            {rich_html}
+        </div>
+    </div>
+    '''
+    st.markdown(container_html, unsafe_allow_html=True)
+
+SFDC_BASE = "https://snowforce.lightning.force.com/lightning/r/vh__Deliverable__c"
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_afe_org():
+    query = """
+        SELECT EMPLOYEE_NAME AS NAME
+        FROM SALES.SE_REPORTING.SE_ORG_HIERARCHY_VW
+        WHERE IS_ACTIVE = TRUE
+          AND (
+            EMPLOYEE_NAME IN ('David Hare', 'Brendan Tisseur', 'Nagesh Cherukuri')
+            OR MANAGER_NAME IN ('David Hare', 'Brendan Tisseur')
+            OR FIRST_LINE_MANAGER IN ('David Hare', 'Brendan Tisseur')
+          )
+    """
+    return run_query(query)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_afe_use_cases():
+    query = """
+        SELECT
+            d.USE_CASE_ID, d.USE_CASE_NAME, d.ACCOUNT_NAME, d.USE_CASE_EACV,
+            d.USE_CASE_STAGE, d.USE_CASE_STATUS, d.THEATER_NAME, d.REGION_NAME,
+            ARRAY_TO_STRING(d.PRODUCT_CATEGORY_ARRAY, ', ') AS PRODUCT_CATEGORIES,
+            d.PRIORITIZED_FEATURES AS KEY_FEATURES,
+            f.value::STRING AS SPECIALIST,
+            IFF(d.SPECIALIST_COMMENTS IS NOT NULL AND TRIM(d.SPECIALIST_COMMENTS) != '', TRUE, FALSE) AS HAS_SPECIALIST_COMMENTS,
+            d.SPECIALIST_COMMENTS,
+            d.LAST_MODIFIED_DATE, d.DECISION_DATE, d.GO_LIVE_DATE
+        FROM MDM.MDM_INTERFACES.DIM_USE_CASE d,
+            LATERAL FLATTEN(d.USE_CASE_TEAM_NAME_LIST) f,
+            LATERAL FLATTEN(d.USE_CASE_TEAM_ROLE_LIST) r
+        WHERE f.index = r.index
+          AND r.value::STRING = 'SE - Workload FCTO'
+        ORDER BY d.USE_CASE_EACV DESC NULLS LAST
+    """
+    return run_query(query)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_pss_org():
+    query = """
+        SELECT DISTINCT PREFERRED_NAME AS NAME
+        FROM SALES.SE_REPORTING.AFE_PSS_ORG
+        WHERE OVERLAY_LEAD_L2 = 'Kevin Hannon'
+           OR MANAGER_NAME = 'Kevin Hannon'
+           OR PREFERRED_NAME = 'Kevin Hannon'
+    """
+    return run_query(query)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_pss_use_cases(pss_names):
+    names_str = "', '".join([n.replace("'", "''") for n in pss_names])
+    query = f"""
+        SELECT
+            d.USE_CASE_ID, d.USE_CASE_NAME, d.ACCOUNT_NAME, d.USE_CASE_EACV,
+            d.USE_CASE_STAGE, d.USE_CASE_STATUS, d.THEATER_NAME, d.REGION_NAME,
+            ARRAY_TO_STRING(d.PRODUCT_CATEGORY_ARRAY, ', ') AS PRODUCT_CATEGORIES,
+            d.PRIORITIZED_FEATURES AS KEY_FEATURES,
+            f.value::STRING AS SPECIALIST,
+            IFF(d.SPECIALIST_COMMENTS IS NOT NULL AND TRIM(d.SPECIALIST_COMMENTS) != '', TRUE, FALSE) AS HAS_SPECIALIST_COMMENTS,
+            d.SPECIALIST_COMMENTS,
+            d.LAST_MODIFIED_DATE, d.DECISION_DATE, d.GO_LIVE_DATE
+        FROM MDM.MDM_INTERFACES.DIM_USE_CASE d,
+            LATERAL FLATTEN(d.USE_CASE_TEAM_NAME_LIST) f
+        WHERE f.value::STRING IN ('{names_str}')
+        ORDER BY d.USE_CASE_EACV DESC NULLS LAST
+    """
+    return run_query(query)
+
+def afe_add_months(d, m):
+    month = d.month - 1 + m
+    year = d.year + month // 12
+    month = month % 12 + 1
+    return date(year, month, 1)
+
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_de_consumption(account_names, start_date, end_date):
     if not account_names:
@@ -436,7 +625,7 @@ stage_clause = f"AND UC.USE_CASE_STAGE IN ('" + "', '".join(stage_filter) + "')"
 account_name_clause = f"AND UC.ACCOUNT_NAME ILIKE '%{account_name_search.strip().replace(chr(39), chr(39)+chr(39))}%'" if account_name_search.strip() else ""
 modified_clause = f"AND UC.LAST_MODIFIED_DATE >= DATEADD('day', -{int(last_n_days)}, CURRENT_DATE())" if last_n_days.strip() else ""
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["AFE Involved Won+Engagement", "AFE All Engagements", "Overall DE/DL Summary", "Weekly Key Updates", "Consumption Credits"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["AFE Involved Won+Engagement", "AFE All Engagements", "Overall DE/DL Summary", "Weekly Key Updates", "Consumption Credits", "PSS-AFE Team Commentry"])
 
 display_cols = ['ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'ENGINEER', 'MANAGER', 'KEY_FEATURES', 'THEATER', 'GVP']
 
@@ -1018,27 +1207,501 @@ Include: account name(s), top features by credits, use cases, segments, and any 
     else:
         st.info("No consumption data found for the last 60 days.")
 
+with tab6:
+    st.subheader("DE Team Engagement Tracker")
+    with st.spinner("Loading engagement data..."):
+        afe_org = load_afe_org()
+        afe_team_members = set(afe_org["NAME"].str.strip().tolist())
+        afe_data = load_afe_use_cases()
+        pss_org = load_pss_org()
+        pss_team_members = set(pss_org["NAME"].str.strip().tolist())
+        pss_data = load_pss_use_cases(list(pss_team_members))
+
+    team_selection = st.multiselect("Team Filter", ["DE/AFE Team (Rithesh)", "PSS Team (Kevin Hannon)"], default=["DE/AFE Team (Rithesh)"], key="afe_bw_team_filter")
+    if not team_selection:
+        team_selection = ["DE/AFE Team (Rithesh)"]
+
+    include_afe = "DE/AFE Team (Rithesh)" in team_selection
+    include_pss = "PSS Team (Kevin Hannon)" in team_selection
+
+    if include_afe and include_pss:
+        combined_members = afe_team_members | pss_team_members
+        combined_data = pd.concat([afe_data, pss_data], ignore_index=True).drop_duplicates(subset=["USE_CASE_ID", "SPECIALIST"])
+    elif include_pss:
+        combined_members = pss_team_members
+        combined_data = pss_data.copy()
+    else:
+        combined_members = afe_team_members
+        combined_data = afe_data.copy()
+
+    cutoff_7d = date.today() - timedelta(days=7)
+    cutoff_14d = date.today() - timedelta(days=14)
+    today_dt = date.today()
+    fy_year = today_dt.year if today_dt.month >= 2 else today_dt.year - 1
+    fy_q_month = ((today_dt.month - 2) % 12) // 3 * 3 + 2
+    fy_q_year = fy_year if fy_q_month >= 2 else fy_year + 1
+    cq_start = date(fy_q_year, fy_q_month, 1)
+    cq_end = afe_add_months(cq_start, 3) - timedelta(days=1)
+    nq_start = cq_end + timedelta(days=1)
+    nq_end = afe_add_months(nq_start, 3) - timedelta(days=1)
+    fy_q_num = ((today_dt.month - 2) % 12) // 3 + 1
+    cq_label = f"This Quarter (FY{fy_year % 100 + 1} Q{fy_q_num})"
+    nq_num = fy_q_num % 4 + 1
+    nq_label = f"Next Quarter (FY{fy_year % 100 + 1} Q{nq_num})"
+
+    expanded = combined_data.copy()
+    expanded["SPECIALIST"] = expanded["SPECIALIST"].str.strip()
+    expanded = expanded[expanded["SPECIALIST"].isin(combined_members)].reset_index(drop=True)
+    expanded = expanded[~expanded["USE_CASE_STAGE"].isin(["8 - Use Case Lost", "7 - Deployed"])].reset_index(drop=True)
+
+    if key_features:
+        kf_mask = expanded["KEY_FEATURES"].apply(
+            lambda x: any(kf.lower() in (x or "").lower() for kf in key_features)
+        )
+        expanded = expanded[kf_mask].reset_index(drop=True)
+
+    expanded["LAST_MODIFIED_DATE_DT"] = pd.to_datetime(expanded["LAST_MODIFIED_DATE"], errors="coerce")
+    expanded["DECISION_DATE_DT"] = pd.to_datetime(expanded["DECISION_DATE"], errors="coerce").dt.date
+    expanded["GO_LIVE_DATE_DT"] = pd.to_datetime(expanded["GO_LIVE_DATE"], errors="coerce").dt.date
+    expanded["HAS_SPECIALIST_COMMENTS"] = expanded["HAS_SPECIALIST_COMMENTS"].astype(bool)
+
+    expanded["IN_CQ"] = (
+        ((expanded["DECISION_DATE_DT"] >= cq_start) & (expanded["DECISION_DATE_DT"] <= cq_end))
+        | ((expanded["GO_LIVE_DATE_DT"] >= cq_start) & (expanded["GO_LIVE_DATE_DT"] <= cq_end))
+    )
+    expanded["IN_NQ"] = (
+        ((expanded["DECISION_DATE_DT"] >= nq_start) & (expanded["DECISION_DATE_DT"] <= nq_end))
+        | ((expanded["GO_LIVE_DATE_DT"] >= nq_start) & (expanded["GO_LIVE_DATE_DT"] <= nq_end))
+    )
+    expanded = expanded[expanded["IN_CQ"] | expanded["IN_NQ"]].reset_index(drop=True)
+    expanded["RECENTLY_UPDATED_7D"] = (
+        expanded["HAS_SPECIALIST_COMMENTS"]
+        & expanded["LAST_MODIFIED_DATE_DT"].notna()
+        & (expanded["LAST_MODIFIED_DATE_DT"].dt.date >= cutoff_7d)
+    )
+    expanded["RECENTLY_UPDATED_14D"] = (
+        expanded["HAS_SPECIALIST_COMMENTS"]
+        & expanded["LAST_MODIFIED_DATE_DT"].notna()
+        & (expanded["LAST_MODIFIED_DATE_DT"].dt.date >= cutoff_14d)
+    )
+
+    all_categories = sorted(set(
+        cat.strip()
+        for cats in expanded["PRODUCT_CATEGORIES"].dropna()
+        for cat in cats.split(",")
+        if cat.strip()
+    ))
+
+    afe_summary = expanded.groupby("SPECIALIST").agg(
+        total_use_cases=("USE_CASE_ID", "count"),
+        with_comments=("HAS_SPECIALIST_COMMENTS", "sum"),
+        active_7d=("RECENTLY_UPDATED_7D", "sum"),
+        active_14d=("RECENTLY_UPDATED_14D", "sum"),
+        total_eacv=("USE_CASE_EACV", "sum"),
+    ).reset_index()
+    afe_summary["without_comments"] = afe_summary["total_use_cases"] - afe_summary["with_comments"]
+    afe_summary["coverage_pct"] = (afe_summary["with_comments"] / afe_summary["total_use_cases"] * 100).round(1)
+
+    def classify_engagement(row):
+        if row["active_7d"] > 0:
+            return "Active (7d)"
+        elif row["active_14d"] > 0:
+            return "Active (14d)"
+        elif row["with_comments"] > 0:
+            return "Stale Engagement"
+        else:
+            return "Not Active Engagement"
+
+    afe_summary["engagement"] = afe_summary.apply(classify_engagement, axis=1)
+    engagement_order = {"Not Active Engagement": 0, "Stale Engagement": 1, "Active (14d)": 2, "Active (7d)": 3}
+    afe_summary["_sort"] = afe_summary["engagement"].map(engagement_order)
+    afe_summary = afe_summary.sort_values(["_sort", "total_use_cases"], ascending=[True, False]).reset_index(drop=True)
+
+    team_label = " + ".join([t.split(" (")[0] for t in team_selection])
+    st.caption(f"{team_label} · {cq_label}: {cq_start.strftime('%b %d')} – {cq_end.strftime('%b %d, %Y')} · {nq_label}: {nq_start.strftime('%b %d')} – {nq_end.strftime('%b %d, %Y')} · Active (7d) = updated in last 7 days · Active (14d) = updated in last 14 days")
+
+    total_specialists = len(afe_summary)
+    active_7d_count = int((afe_summary["engagement"] == "Active (7d)").sum())
+    active_14d_count = int((afe_summary["engagement"] == "Active (14d)").sum())
+    stale_count = int((afe_summary["engagement"] == "Stale Engagement").sum())
+    not_active_count = int((afe_summary["engagement"] == "Not Active Engagement").sum())
+    total_uc = len(expanded)
+
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1:
+        st.markdown(f'<div class="metric-card metric-neutral"><div class="label">Total AFEs</div><div class="value">{total_specialists}</div></div>', unsafe_allow_html=True)
+    with c2:
+        st.markdown(f'<div class="metric-card metric-green"><div class="label">Active (7d)</div><div class="value">{active_7d_count}</div></div>', unsafe_allow_html=True)
+    with c3:
+        st.markdown(f'<div class="metric-card" style="background-color:#1a3a2a;border-left:4px solid #22c55e"><div class="label">Active (14d)</div><div class="value">{active_14d_count}</div></div>', unsafe_allow_html=True)
+    with c4:
+        st.markdown(f'<div class="metric-card metric-amber"><div class="label">Stale Engagement</div><div class="value">{stale_count}</div></div>', unsafe_allow_html=True)
+    with c5:
+        st.markdown(f'<div class="metric-card metric-red"><div class="label">Not Active</div><div class="value">{not_active_count}</div></div>', unsafe_allow_html=True)
+    with c6:
+        st.markdown(f'<div class="metric-card metric-neutral"><div class="label">Total Use Cases</div><div class="value">{total_uc:,}</div></div>', unsafe_allow_html=True)
+
+    st.markdown("")
+
+    filter_cols = st.columns([2, 3])
+    with filter_cols[0]:
+        afe_search = st.text_input("Search AFE", placeholder="Type a name to search...", key="afe_bw_search")
+    with filter_cols[1]:
+        selected_categories = st.multiselect("Filter by Product Category", all_categories, key="afe_bw_categories")
+
+    if selected_categories:
+        cat_mask = expanded["PRODUCT_CATEGORIES"].apply(
+            lambda x: any(c.strip() in selected_categories for c in (x or "").split(","))
+        )
+        filtered_expanded = expanded[cat_mask]
+        filtered_specialists = set(filtered_expanded["SPECIALIST"].unique())
+        summary_view = afe_summary[afe_summary["SPECIALIST"].isin(filtered_specialists)].reset_index(drop=True)
+    else:
+        filtered_expanded = expanded
+        summary_view = afe_summary
+
+    sv_total = len(summary_view)
+    sv_active_7d = int((summary_view["engagement"] == "Active (7d)").sum())
+    sv_active_14d = int((summary_view["engagement"] == "Active (14d)").sum())
+    sv_stale = int((summary_view["engagement"] == "Stale Engagement").sum())
+    sv_not_active = int((summary_view["engagement"] == "Not Active Engagement").sum())
+
+    ENGAGEMENT_COLORS = {
+        "Active (7d)": "background-color: #0a2e1a; color: #4ade80",
+        "Active (14d)": "background-color: #1a3a2a; color: #22c55e",
+        "Stale Engagement": "background-color: #2e2400; color: #f59e0b",
+        "Not Active Engagement": "background-color: #3d1111; color: #ff6b6b",
+    }
+
+    def style_afe_summary(df):
+        display = df[["SPECIALIST", "engagement", "total_use_cases", "active_7d", "active_14d", "with_comments", "without_comments", "coverage_pct", "total_eacv"]].copy()
+        display.columns = ["AFE", "Engagement", "Total Use Cases", "Active (7d)", "Active (14d)", "With Comments", "Without Comments", "Coverage %", "Total EACV"]
+        def color_row(row):
+            style = ENGAGEMENT_COLORS.get(row["Engagement"], "")
+            return [style] * len(row)
+        styled = display.style.apply(color_row, axis=1).format({"Coverage %": "{:.1f}%", "Total EACV": "${:,.0f}"})
+        return styled
+
+    def filter_by_afe_search(df, query):
+        if query:
+            return df[df["SPECIALIST"].str.contains(query, case=False, na=False)]
+        return df
+
+    tab_all, tab_not, tab_stale, tab_active_14d, tab_active_7d = st.tabs([
+        f"All ({sv_total})", f"Not Active ({sv_not_active})",
+        f"Stale ({sv_stale})", f"Active 14d ({sv_active_14d})", f"Active 7d ({sv_active_7d})",
+    ])
+
+    with tab_all:
+        filtered = filter_by_afe_search(summary_view, afe_search)
+        st.dataframe(style_afe_summary(filtered), hide_index=True, use_container_width=True, height=500)
+
+    with tab_not:
+        not_active = summary_view[summary_view["engagement"] == "Not Active Engagement"].reset_index(drop=True)
+        filtered = filter_by_afe_search(not_active, afe_search)
+        if filtered.empty:
+            st.success("All AFEs have engagement!")
+        else:
+            st.dataframe(style_afe_summary(filtered), hide_index=True, use_container_width=True, height=500)
+
+    with tab_stale:
+        stale = summary_view[summary_view["engagement"] == "Stale Engagement"].reset_index(drop=True)
+        filtered = filter_by_afe_search(stale, afe_search)
+        if filtered.empty:
+            st.info("No stale engagements found.")
+        else:
+            st.dataframe(style_afe_summary(filtered), hide_index=True, use_container_width=True, height=500)
+
+    with tab_active_14d:
+        active_14d = summary_view[summary_view["engagement"] == "Active (14d)"].reset_index(drop=True)
+        filtered = filter_by_afe_search(active_14d, afe_search)
+        if filtered.empty:
+            st.info("No active (14d) engagements found.")
+        else:
+            st.dataframe(style_afe_summary(filtered), hide_index=True, use_container_width=True, height=500)
+
+    with tab_active_7d:
+        active_7d = summary_view[summary_view["engagement"] == "Active (7d)"].reset_index(drop=True)
+        filtered = filter_by_afe_search(active_7d, afe_search)
+        if filtered.empty:
+            st.info("No active (7d) engagements found.")
+        else:
+            st.dataframe(style_afe_summary(filtered), hide_index=True, use_container_width=True, height=500)
+
+    st.markdown("---")
+    st.subheader("Use Case Detail")
+
+    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+    with col_f1:
+        detail_specialists = ["All"] + sorted(filtered_expanded["SPECIALIST"].unique().tolist())
+        selected_afe = st.selectbox("Filter by AFE", detail_specialists, key="afe_bw_specialist")
+    with col_f2:
+        quarter_options = ["Both Quarters", cq_label, nq_label]
+        quarter_filter = st.selectbox("Filter by Quarter", quarter_options, key="afe_bw_quarter")
+    with col_f3:
+        engagement_filter = st.selectbox("Filter by Engagement", ["All", "Active (7d)", "Active (14d)", "Stale (comments but older)", "No Comments"], key="afe_bw_engagement")
+    with col_f4:
+        de_features = sorted(set(
+            kf.strip()
+            for kfs in filtered_expanded["KEY_FEATURES"].dropna()
+            for kf in kfs.split(";")
+            if kf.strip() and kf.strip().startswith("DE -")
+        ))
+        selected_detail_cats = st.multiselect("Key Feature", de_features, key="afe_bw_detail_cats")
+
+    if selected_afe == "All":
+        detail = filtered_expanded.copy()
+    else:
+        detail = filtered_expanded[filtered_expanded["SPECIALIST"] == selected_afe].copy()
+
+    if quarter_filter == cq_label:
+        detail = detail[detail["IN_CQ"]].copy()
+    elif quarter_filter == nq_label:
+        detail = detail[detail["IN_NQ"]].copy()
+
+    if engagement_filter == "Active (7d)":
+        detail = detail[detail["RECENTLY_UPDATED_7D"] == True]
+    elif engagement_filter == "Active (14d)":
+        detail = detail[detail["RECENTLY_UPDATED_14D"] == True]
+    elif engagement_filter == "Stale (comments but older)":
+        detail = detail[(detail["HAS_SPECIALIST_COMMENTS"] == True) & (detail["RECENTLY_UPDATED_14D"] == False)]
+    elif engagement_filter == "No Comments":
+        detail = detail[detail["HAS_SPECIALIST_COMMENTS"] == False]
+
+    if selected_detail_cats:
+        detail = detail[detail["KEY_FEATURES"].apply(
+            lambda x: any(kf.strip() in selected_detail_cats for kf in (x or "").split(";"))
+        )].reset_index(drop=True)
+
+    detail["SFDC"] = detail["USE_CASE_ID"].apply(lambda uid: f"{SFDC_BASE}/{uid}/view" if uid else "")
+
+    def uc_engagement(row):
+        if row["RECENTLY_UPDATED_7D"]:
+            return "Active (7d)"
+        elif row["RECENTLY_UPDATED_14D"]:
+            return "Active (14d)"
+        elif row["HAS_SPECIALIST_COMMENTS"]:
+            return "Stale"
+        return "None"
+
+    detail["Engagement"] = detail.apply(uc_engagement, axis=1)
+    detail = detail.reset_index(drop=True)
+
+    detail_display = detail[["SPECIALIST", "ACCOUNT_NAME", "USE_CASE_NAME", "USE_CASE_STAGE", "USE_CASE_STATUS", "USE_CASE_EACV", "THEATER_NAME", "PRODUCT_CATEGORIES", "Engagement", "DECISION_DATE", "GO_LIVE_DATE", "LAST_MODIFIED_DATE", "SFDC"]].rename(columns={
+        "SPECIALIST": "AFE", "ACCOUNT_NAME": "Account", "USE_CASE_NAME": "Use Case",
+        "USE_CASE_STAGE": "Stage", "USE_CASE_STATUS": "Status", "USE_CASE_EACV": "EACV",
+        "THEATER_NAME": "Theater", "PRODUCT_CATEGORIES": "Products",
+        "LAST_MODIFIED_DATE": "Last Modified", "DECISION_DATE": "Decision Date", "GO_LIVE_DATE": "Go Live Date",
+    })
+
+    DETAIL_COLORS = {
+        "Active (7d)": "background-color: #0a2e1a; color: #4ade80",
+        "Active (14d)": "background-color: #1a3a2a; color: #22c55e",
+        "Stale": "background-color: #2e2400; color: #f59e0b",
+        "None": "background-color: #3d1111; color: #ff6b6b",
+    }
+
+    def style_detail_row(row):
+        style = DETAIL_COLORS.get(row["Engagement"], "")
+        return [style] * len(row)
+
+    styled_detail = detail_display.style.apply(style_detail_row, axis=1).format({"EACV": "${:,.0f}"})
+
+    st.dataframe(
+        styled_detail, hide_index=True, use_container_width=True, height=500,
+        column_config={"SFDC": st.column_config.LinkColumn("SFDC", display_text="Open")},
+    )
+    st.caption(f"Showing {len(detail):,} use cases · Source: MDM.MDM_INTERFACES.DIM_USE_CASE · Role: SE - Workload FCTO (AFE)")
+
+    st.markdown("---")
+    st.subheader("AI Engagement Summary")
+    st.caption("Analyze specialist comments for selected use cases — what's working and next action items")
+
+    select_all = st.checkbox("Select All Use Cases", value=False, key="afe_bw_select_all")
+
+    if not detail.empty and not select_all:
+        uc_options = [f"{row['ACCOUNT_NAME']} — {row['USE_CASE_NAME']} ({row['SPECIALIST']})" for _, row in detail.iterrows()]
+        selected_ucs = st.multiselect(
+            f"Or pick specific use cases ({len(detail)} available)",
+            uc_options,
+            key="afe_bw_uc_select",
+        )
+    else:
+        uc_options = []
+        selected_ucs = []
+
+    has_selection = select_all or len(selected_ucs) > 0
+
+    if st.button("Generate AI Summary", key="afe_bw_ai_summary_btn", type="primary", disabled=not has_selection):
+        if select_all:
+            selected_detail = detail
+        else:
+            selected_indices = [uc_options.index(uc) for uc in selected_ucs]
+            selected_detail = detail.iloc[selected_indices]
+        comments_data = selected_detail[selected_detail["SPECIALIST_COMMENTS"].notna() & (selected_detail["SPECIALIST_COMMENTS"].str.strip() != "")]
+
+        if comments_data.empty:
+            st.warning("No specialist comments found for the selected use cases.")
+        else:
+            comments_sorted = comments_data.sort_values("USE_CASE_EACV", ascending=False)
+            max_comments = 40
+            truncated = len(comments_sorted) > max_comments
+            comments_subset = comments_sorted.head(max_comments)
+            comment_lines = []
+            for _, row in comments_subset.iterrows():
+                comment_text = str(row["SPECIALIST_COMMENTS"]).strip()[:400]
+                row_features = str(row.get("KEY_FEATURES", "") or "").strip()
+                comment_lines.append(
+                    f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | AFE: {row['SPECIALIST']} | "
+                    f"Stage: {row['USE_CASE_STAGE']} | EACV: ${row['USE_CASE_EACV']:,.0f} | Features: {row_features}\n"
+                    f"  Comment: {comment_text}"
+                )
+            comments_block = "\n".join(comment_lines)
+
+            filter_context_parts = []
+            if selected_detail_cats:
+                filter_context_parts.append(f"Key Feature filter: {', '.join(selected_detail_cats)}")
+            if selected_afe != "All":
+                filter_context_parts.append(f"Specialist: {selected_afe}")
+            if engagement_filter != "All":
+                filter_context_parts.append(f"Engagement: {engagement_filter}")
+            if quarter_filter != "Both Quarters":
+                filter_context_parts.append(f"Quarter: {quarter_filter}")
+            filter_context = ""
+            if filter_context_parts:
+                filter_context = (
+                    "ACTIVE FILTERS: " + " | ".join(filter_context_parts) + "\n"
+                    "IMPORTANT: Focus your analysis specifically on the filtered context above. "
+                    "For example, if filtered to a specific feature like Iceberg or Lakehouse, center your analysis on that technology area — "
+                    "what adoption patterns, blockers, and next steps are specific to that feature.\n\n"
+                )
+
+            ai_prompt = (
+                "You are a specialist engagement analyst. Analyze the following specialist comments from Snowflake use case engagements.\n\n"
+                f"{filter_context}"
+                f"There are {len(comments_data)} use cases with specialist comments (out of {len(selected_detail)} selected).\n\n"
+                f"SPECIALIST COMMENTS:\n{comments_block}\n\n"
+                "Provide a structured summary with these sections:\n"
+                "1. **What's Working** — Identify positive themes, successful patterns, products gaining traction, and strong engagements from the comments.\n"
+                "2. **Key Risks / Blockers** — Any concerns, delays, blockers, or at-risk engagements mentioned in comments.\n"
+                "3. **Next Action Items** — Specific recommended next steps based on the comments. Be actionable and reference account names.\n\n"
+                "IMPORTANT: Always include EACV dollar amounts when referencing accounts — quantify pipeline at risk, wins, and action items by dollar value.\n\n"
+                "Be concise, data-driven, and reference specific accounts/use cases. Format with markdown."
+            )
+            with st.spinner("Analyzing specialist comments with Cortex AI..."):
+                ai_result = generate_ai_summary(ai_prompt)
+            render_rich_ai_summary(ai_result, summary_id="afe_bw_ai_summary")
+            truncated_note = f" (top {max_comments} by EACV shown to AI)" if truncated else ""
+            st.caption(f"Analyzed {len(comments_data)} use cases with comments out of {len(selected_detail)} selected{truncated_note}")
+
+    if not has_selection and not detail.empty:
+        st.info("Check 'Select All Use Cases' or pick specific use cases above to generate an AI summary of specialist comments.")
+
+    st.markdown("---")
+    st.subheader("Ask a Question")
+    st.caption("Ask questions about the engagement data using Snowflake Cortex")
+
+    if "afe_bw_chat_messages" not in st.session_state:
+        st.session_state.afe_bw_chat_messages = []
+
+    def build_afe_data_context():
+        ctx_lines = []
+        ctx_lines.append(f"Dashboard: DE Team Engagement Tracker for {team_label}")
+        ctx_lines.append(f"Date: {today_dt}, Fiscal quarters: {cq_label} ({cq_start} to {cq_end}), {nq_label} ({nq_start} to {nq_end})")
+        ctx_lines.append(f"Total AFEs: {total_specialists}, Active: {active_count}, Stale: {stale_count}, Not Active: {not_active_count}, Total Use Cases: {total_uc}")
+        ctx_lines.append("")
+        ctx_lines.append("AFE Summary (Name | Engagement | Total Use Cases | Active(7d) | With Comments | Without Comments | Coverage% | Total EACV):")
+        for _, row in afe_summary.iterrows():
+            ctx_lines.append(f"  {row['SPECIALIST']} | {row['engagement']} | {int(row['total_use_cases'])} | {int(row['active_use_cases'])} | {int(row['with_comments'])} | {int(row['without_comments'])} | {row['coverage_pct']}% | ${row['total_eacv']:,.0f}")
+        ctx_lines.append("")
+        top_uc = expanded.nlargest(50, "USE_CASE_EACV")[["SPECIALIST", "ACCOUNT_NAME", "USE_CASE_NAME", "USE_CASE_EACV", "USE_CASE_STAGE", "USE_CASE_STATUS", "DECISION_DATE", "GO_LIVE_DATE"]].to_string(index=False)
+        ctx_lines.append(f"Top 50 use cases by EACV:\n{top_uc}")
+        return "\n".join(ctx_lines)
+
+    afe_bw_question = st.text_input("e.g. Who has the most use cases without comments?", key="afe_bw_question")
+    if st.button("Ask", key="afe_bw_ask_btn") and afe_bw_question:
+        st.session_state.afe_bw_chat_messages.append({"role": "user", "content": afe_bw_question})
+        with st.spinner("Thinking..."):
+            data_context = build_afe_data_context()
+            full_prompt = (
+                "You are a helpful data analyst assistant for the DE Team Engagement Tracker dashboard. "
+                "Answer questions using ONLY the data provided below. Be concise and specific. Use numbers and names from the data. "
+                "If the data doesn't contain enough information to answer, say so.\n\n"
+                f"DATA:\n{data_context}\n\nQuestion: {afe_bw_question}"
+            )
+            answer = generate_ai_summary(full_prompt)
+        st.session_state.afe_bw_chat_messages.append({"role": "assistant", "content": answer})
+
+    for msg in st.session_state.afe_bw_chat_messages:
+        if msg["role"] == "user":
+            st.markdown(f"**You:** {msg['content']}")
+        else:
+            st.markdown(f"**Cortex:** {msg['content']}")
+
 st.markdown("---")
 st.markdown("## 💬 Ask Cortex")
 
-def build_cortex_data_context(df, max_rows=150):
+def cortex_chat_query(question, df):
     if df is None or df.empty:
-        return ""
+        return generate_ai_summary(f"Answer about DE/DL engagements: {question}"), pd.DataFrame()
     comment_cols = [c for c in ['SE_COMMENTS', 'NEXT_STEPS', 'IMPLEMENTATION_COMMENTS', 'SPECIALIST_COMMENTS', 'PARTNER_COMMENTS'] if c in df.columns]
-    context_cols = ['USE_CASE_ID', 'ACCOUNT_NAME', 'USE_CASE_NAME', 'STAGE', 'EACV'] + comment_cols
-    context_cols = [c for c in context_cols if c in df.columns]
-    ctx_df = df[context_cols].head(max_rows).copy()
+    df_search = df.copy()
+    df_search['_ALL_COMMENTS'] = ''
+    for c in comment_cols:
+        df_search['_ALL_COMMENTS'] = df_search['_ALL_COMMENTS'] + ' ' + df_search[c].fillna('').astype(str)
+    df_search['_ALL_COMMENTS'] = df_search['_ALL_COMMENTS'].str.lower()
+    df_search['_STAGE_LOWER'] = df_search['STAGE'].fillna('').astype(str).str.lower() if 'STAGE' in df_search.columns else ''
+    df_search['_SEARCHABLE'] = df_search['_ALL_COMMENTS'] + ' ' + df_search['_STAGE_LOWER']
+    if 'ACCOUNT_NAME' in df_search.columns:
+        df_search['_SEARCHABLE'] = df_search['_SEARCHABLE'] + ' ' + df_search['ACCOUNT_NAME'].fillna('').astype(str).str.lower()
+    if 'USE_CASE_NAME' in df_search.columns:
+        df_search['_SEARCHABLE'] = df_search['_SEARCHABLE'] + ' ' + df_search['USE_CASE_NAME'].fillna('').astype(str).str.lower()
+
+    keyword_prompt = f"""Extract search keywords from this question for filtering use case data. Return ONLY a comma-separated list of keywords/phrases to search for in comments and status fields. No explanation.
+
+Question: {question}
+
+Examples:
+- "show me use cases with red flags" -> red, risk, concern, blocker, issue, delayed, not on track
+- "which accounts are in discovery stage" -> discovery, 1 -
+- "show me high EACV deals" -> (no keywords, this is a numeric filter)
+
+Keywords:"""
+    try:
+        keywords_raw = generate_ai_summary(keyword_prompt)
+        keywords = [k.strip().lower() for k in keywords_raw.split(',') if k.strip() and len(k.strip()) > 1]
+    except:
+        keywords = []
+
+    if keywords:
+        mask = df_search['_SEARCHABLE'].apply(lambda x: any(kw in x for kw in keywords))
+        filtered = df[mask]
+    else:
+        filtered = df
+
+    show_cols = [c for c in ['ACCOUNT_NAME', 'USE_CASE_NAME', 'STAGE', 'EACV', 'ENGINEER'] + comment_cols if c in filtered.columns]
+    ctx_rows = filtered.head(30)
+    ctx_cols = [c for c in ['ACCOUNT_NAME', 'USE_CASE_NAME', 'STAGE'] + comment_cols if c in ctx_rows.columns]
+    ctx_df = ctx_rows[ctx_cols].copy()
     for c in comment_cols:
         if c in ctx_df.columns:
-            ctx_df[c] = ctx_df[c].fillna('').astype(str).str[:200]
-    return ctx_df.to_string(index=False)
+            ctx_df[c] = ctx_df[c].fillna('').astype(str).str[:150]
+    data_str = ctx_df.to_string(index=False) if not ctx_df.empty else "No matching use cases found."
 
-def parse_matching_ids(ai_response):
-    import re
-    ids = re.findall(r'UC[-_]?\d+[-_]?\d*[-_]?\d*', ai_response)
-    if not ids:
-        ids = re.findall(r'\b(\d{6,})\b', ai_response)
-    return list(set(ids))
+    analysis_prompt = f"""You are a DE/DL team analyst. Analyze this filtered use case data to answer the question.
+
+DATA ({len(filtered)} matching use cases, showing up to 30):
+{data_str}
+
+QUESTION: {question}
+
+Provide a concise, data-driven answer. Reference specific account names and findings."""
+    try:
+        analysis = generate_ai_summary(analysis_prompt)
+    except:
+        analysis = "Error generating analysis."
+
+    return analysis, filtered[show_cols] if not filtered.empty else pd.DataFrame()
 
 try:
     cortex_base_df = df_all if 'df_all' in dir() and df_all is not None and not df_all.empty else (df_won if 'df_won' in dir() and df_won is not None and not df_won.empty else pd.DataFrame())
@@ -1047,54 +1710,21 @@ except:
 
 if 'chat_messages' not in st.session_state:
     st.session_state.chat_messages = []
-if 'cortex_filtered_df' not in st.session_state:
-    st.session_state.cortex_filtered_df = None
 
 for msg in st.session_state.chat_messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        if msg["role"] == "assistant" and msg.get("filtered_df") is not None and not msg["filtered_df"].empty:
+        if msg["role"] == "assistant" and msg.get("filtered_df") is not None and len(msg["filtered_df"]) > 0:
             st.dataframe(msg["filtered_df"], use_container_width=True, height=300)
 
 if prompt := st.chat_input("Ask about DE/DL engagements (e.g., 'show me use cases with concerns or red flags')..."):
     st.session_state.chat_messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"): st.markdown(prompt)
     with st.chat_message("assistant"):
-        if not cortex_base_df.empty:
-            data_context = build_cortex_data_context(cortex_base_df)
-            ai_prompt = f"""You are a DE/DL team dashboard analyst. Below is use case data with comments and status fields.
-
-DATA:
-{data_context}
-
-USER QUESTION: {prompt}
-
-INSTRUCTIONS:
-1. Analyze the data to answer the user's question.
-2. Look through SE_COMMENTS, NEXT_STEPS, IMPLEMENTATION_COMMENTS, SPECIALIST_COMMENTS, PARTNER_COMMENTS, and STAGE fields for relevant information.
-3. For each matching use case, mention the USE_CASE_ID, ACCOUNT_NAME, and why it matches.
-4. At the end, provide a section titled "MATCHING_IDS:" followed by a comma-separated list of the matching USE_CASE_ID values.
-5. If no use cases match, say so and set MATCHING_IDS: NONE
-
-Be concise and data-driven."""
-            with st.spinner("Analyzing use case data..."):
-                result = generate_ai_summary(ai_prompt)
-            display_text = result.split("MATCHING_IDS:")[0].strip() if "MATCHING_IDS:" in result else result
-            st.markdown(display_text)
-
-            matching_ids = parse_matching_ids(result.split("MATCHING_IDS:")[-1] if "MATCHING_IDS:" in result else "")
-            filtered_df = pd.DataFrame()
-            if matching_ids and 'USE_CASE_ID' in cortex_base_df.columns:
-                mask = cortex_base_df['USE_CASE_ID'].astype(str).isin([str(i) for i in matching_ids])
-                filtered_df = cortex_base_df[mask]
-            if not filtered_df.empty:
-                show_cols = [c for c in ['ACCOUNT_NAME', 'USE_CASE_NAME', 'STAGE', 'EACV', 'SE_COMMENTS', 'NEXT_STEPS', 'ENGINEER'] if c in filtered_df.columns]
-                st.markdown(f"**Matching Use Cases ({len(filtered_df)}):**")
-                st.dataframe(filtered_df[show_cols], use_container_width=True, height=300)
-                st.session_state.chat_messages.append({"role": "assistant", "content": display_text, "filtered_df": filtered_df[show_cols]})
-            else:
-                st.session_state.chat_messages.append({"role": "assistant", "content": display_text, "filtered_df": None})
-        else:
-            result = generate_ai_summary(f"Answer about DE/DL engagements: {prompt}")
-            st.markdown(result)
-            st.session_state.chat_messages.append({"role": "assistant", "content": result, "filtered_df": None})
+        with st.spinner("Analyzing use case data..."):
+            analysis, filtered_df = cortex_chat_query(prompt, cortex_base_df)
+        st.markdown(analysis)
+        if not filtered_df.empty:
+            st.markdown(f"**Matching Use Cases ({len(filtered_df)}):**")
+            st.dataframe(filtered_df, use_container_width=True, height=300)
+        st.session_state.chat_messages.append({"role": "assistant", "content": analysis, "filtered_df": filtered_df})
