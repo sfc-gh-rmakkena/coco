@@ -1381,11 +1381,11 @@ with tab6:
         & (expanded["LAST_MODIFIED_DATE_DT"].dt.date >= cutoff_14d)
     )
 
-    all_categories = sorted(set(
-        cat.strip()
-        for cats in expanded["PRODUCT_CATEGORIES"].dropna()
-        for cat in cats.split(",")
-        if cat.strip()
+    all_key_features_pss = sorted(set(
+        kf.strip()
+        for kfs in expanded["KEY_FEATURES"].dropna()
+        for kf in kfs.split(";")
+        if kf.strip() and kf.strip().startswith("DE -")
     ))
 
     afe_summary = expanded.groupby("SPECIALIST").agg(
@@ -1443,13 +1443,13 @@ with tab6:
     with filter_cols[0]:
         afe_search = st.text_input("Search AFE", placeholder="Type a name to search...", key="afe_bw_search")
     with filter_cols[1]:
-        selected_categories = st.multiselect("Filter by Product Category", all_categories, key="afe_bw_categories")
+        selected_key_features_pss = st.multiselect("Filter by Key Feature", all_key_features_pss, key="afe_bw_key_features")
 
-    if selected_categories:
-        cat_mask = expanded["PRODUCT_CATEGORIES"].apply(
-            lambda x: any(c.strip() in selected_categories for c in (x or "").split(","))
+    if selected_key_features_pss:
+        kf_mask = expanded["KEY_FEATURES"].apply(
+            lambda x: any(kf.strip() in selected_key_features_pss for kf in (x or "").split(";"))
         )
-        filtered_expanded = expanded[cat_mask]
+        filtered_expanded = expanded[kf_mask]
         filtered_specialists = set(filtered_expanded["SPECIALIST"].unique())
         summary_view = afe_summary[afe_summary["SPECIALIST"].isin(filtered_specialists)].reset_index(drop=True)
     else:
@@ -1855,12 +1855,7 @@ with tab7:
         with svc_filter_cols[0]:
             svc_afe_search = st.text_input("Search SDM", placeholder="Type a name to search...", key="svc_bw_search")
         with svc_filter_cols[1]:
-            svc_all_key_features = sorted(set(
-                kf.strip()
-                for kfs in svc_expanded["KEY_FEATURES"].dropna()
-                for kf in kfs.split(";")
-                if kf.strip() and kf.strip().startswith("DE -")
-            ))
+            svc_all_key_features = ["DE - Openflow", "DE - Openflow Oracle", "DE - Iceberg", "DE - Snowpark DE", "DE - Snowpark Connect", "DE - Dynamic Tables", "DE - Snowpipe Streaming", "DE - Snowpipe", "DE - Serverless Task", "DE - Connectors", "DE - dbt Projects", "DE - SAP Integration", "DE - Basic"]
             svc_selected_key_features = st.multiselect("Filter by Key Feature", svc_all_key_features, key="svc_bw_key_features")
 
         if svc_selected_key_features:
