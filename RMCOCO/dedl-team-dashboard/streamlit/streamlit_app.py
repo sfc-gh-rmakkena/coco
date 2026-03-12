@@ -158,7 +158,8 @@ def build_bulk_ai_prompt(df):
         eacv = row.get('EACV', 0) or 0
         features = row.get('KEY_FEATURES', '') or 'None'
         engineer = row.get('ENGINEER', 'Unknown')
-        summary_data.append(f"- {account} | Stage: {stage} | EACV: ${eacv:,.0f} | Features: {features[:400]} | PSE: {engineer}")
+        drivers = row.get('ENGAGEMENT_DRIVERS', '') or 'SE'
+        summary_data.append(f"- {account} | Stage: {stage} | EACV: ${eacv:,.0f} | Features: {features[:400]} | Drivers: {drivers} | PSE: {engineer}")
     
     use_cases_text = "\n".join(summary_data)
     
@@ -215,6 +216,7 @@ def build_usecase_ai_prompt(row):
     tech_use_case = row.get('TECHNICAL_USE_CASE', '') or 'Not specified'
     comments = row.get('SE_COMMENTS', '') or 'None'
     next_steps = row.get('NEXT_STEPS', '') or 'None'
+    drivers = row.get('ENGAGEMENT_DRIVERS', '') or 'SE'
     
     return f"""Analyze this specific DE/DL use case and provide actionable insights:
 
@@ -224,6 +226,7 @@ def build_usecase_ai_prompt(row):
 - Stage: {stage}
 - EACV: ${eacv:,.0f}
 - Key Features: {features}
+- Engagement Drivers: {drivers}
 - PSE: {engineer}
 - Technical Use Case: {tech_use_case}
 - SE Comments: {comments[:400] if comments else 'None'}
@@ -261,6 +264,7 @@ def build_weekly_usecase_ai_prompt(row):
     partner = row.get('PARTNER_COMMENTS', '') or 'None'
     gvp = row.get('GVP', '') or 'Unknown'
     theater = row.get('THEATER', '') or 'Unknown'
+    drivers = row.get('ENGAGEMENT_DRIVERS', '') or 'SE'
 
     return f"""Analyze this DE/DL use case and provide actionable insights:
 
@@ -270,6 +274,7 @@ def build_weekly_usecase_ai_prompt(row):
 - Stage: {stage}
 - EACV: ${eacv:,.0f}
 - Key Features: {features}
+- Engagement Drivers: {drivers}
 - Technical Use Case: {tech_use_case}
 - GVP: {gvp} | Theater: {theater}
 - SE Comments: {se_comments[:400] if se_comments else 'None'}
@@ -337,14 +342,22 @@ def build_afe_query(start_date, end_date, emp_filter, feature_filter, key_feat_f
     SELECT UC.USE_CASE_ID, LISTAGG(DISTINCT D.EMPLOYEE_NAME, ', ') WITHIN GROUP (ORDER BY D.EMPLOYEE_NAME) AS ENGINEER,
         MAX(D.FIRST_LINE_MANAGER) AS MANAGER, UC.ACCOUNT_NAME, UC.ACCOUNT_OWNER_NAME AS ACCOUNT_OWNER, UC.ACCOUNT_LEAD_SE_NAME AS ACCOUNT_SE, UC.USE_CASE_NAME,
         UC.USE_CASE_STAGE AS STAGE, UC.USE_CASE_EACV AS EACV, UC.TECHNICAL_USE_CASE, UC.PRIORITIZED_FEATURES AS KEY_FEATURES,
-        UC.THEATER_NAME AS THEATER, UC.ACCOUNT_GVP AS GVP, UC.DECISION_DATE, UC.GO_LIVE_DATE, UC.SE_COMMENTS, UC.NEXT_STEPS, UC.LAST_MODIFIED_DATE
+        UC.THEATER_NAME AS THEATER, UC.ACCOUNT_GVP AS GVP, UC.DECISION_DATE, UC.GO_LIVE_DATE, UC.SE_COMMENTS, UC.NEXT_STEPS, UC.LAST_MODIFIED_DATE,
+        ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
+            IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
+            IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
+            IFF(UC.IS_PARTNER_ATTACHED = TRUE OR ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Partner%', 'Partner', NULL),
+            IFF(UC.IS_PS_ENGAGED = TRUE OR ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Services Delivery%', 'Services', NULL),
+            IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Industry%' OR ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%FCTO - Industry%', 'Industry', NULL)
+        )), ', ') AS ENGAGEMENT_DRIVERS
     FROM DEDL_ATTRIBUTION D
     INNER JOIN MDM.MDM_INTERFACES.DIM_USE_CASE UC ON D.USE_CASE_ID = UC.USE_CASE_ID
     WHERE 1=1 {afe_stage_clause}
       AND (UC.DECISION_DATE BETWEEN '{start_date}' AND '{end_date}' OR UC.GO_LIVE_DATE BETWEEN '{start_date}' AND '{end_date}')
       {feature_filter} {key_feat_filter} {gvp_clause} {theater_clause} {modified_clause} {account_name_clause}
     GROUP BY UC.USE_CASE_ID, UC.ACCOUNT_NAME, UC.ACCOUNT_OWNER_NAME, UC.ACCOUNT_LEAD_SE_NAME, UC.USE_CASE_NAME, UC.USE_CASE_STAGE, UC.USE_CASE_EACV,
-             UC.TECHNICAL_USE_CASE, UC.PRIORITIZED_FEATURES, UC.THEATER_NAME, UC.ACCOUNT_GVP, UC.DECISION_DATE, UC.GO_LIVE_DATE, UC.SE_COMMENTS, UC.NEXT_STEPS, UC.LAST_MODIFIED_DATE
+             UC.TECHNICAL_USE_CASE, UC.PRIORITIZED_FEATURES, UC.THEATER_NAME, UC.ACCOUNT_GVP, UC.DECISION_DATE, UC.GO_LIVE_DATE, UC.SE_COMMENTS, UC.NEXT_STEPS, UC.LAST_MODIFIED_DATE,
+             UC.USE_CASE_TEAM_ROLE_LIST, UC.IS_PARTNER_ATTACHED, UC.IS_PS_ENGAGED
     ORDER BY UC.USE_CASE_EACV DESC NULLS LAST
     """
 
@@ -495,7 +508,14 @@ def load_afe_use_cases():
             f.value::STRING AS SPECIALIST,
             IFF(d.SPECIALIST_COMMENTS IS NOT NULL AND TRIM(d.SPECIALIST_COMMENTS) != '', TRUE, FALSE) AS HAS_SPECIALIST_COMMENTS,
             d.SPECIALIST_COMMENTS,
-            d.LAST_MODIFIED_DATE, d.DECISION_DATE, d.GO_LIVE_DATE
+            d.LAST_MODIFIED_DATE, d.DECISION_DATE, d.GO_LIVE_DATE,
+            ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
+                IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
+                IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
+                IFF(d.IS_PARTNER_ATTACHED = TRUE OR ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Partner%', 'Partner', NULL),
+                IFF(d.IS_PS_ENGAGED = TRUE OR ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Services Delivery%', 'Services', NULL),
+                IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Industry%' OR ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%FCTO - Industry%', 'Industry', NULL)
+            )), ', ') AS ENGAGEMENT_DRIVERS
         FROM MDM.MDM_INTERFACES.DIM_USE_CASE d,
             LATERAL FLATTEN(d.USE_CASE_TEAM_NAME_LIST) f,
             LATERAL FLATTEN(d.USE_CASE_TEAM_ROLE_LIST) r
@@ -528,7 +548,14 @@ def load_pss_use_cases(pss_names):
             f.value::STRING AS SPECIALIST,
             IFF(d.SPECIALIST_COMMENTS IS NOT NULL AND TRIM(d.SPECIALIST_COMMENTS) != '', TRUE, FALSE) AS HAS_SPECIALIST_COMMENTS,
             d.SPECIALIST_COMMENTS,
-            d.LAST_MODIFIED_DATE, d.DECISION_DATE, d.GO_LIVE_DATE
+            d.LAST_MODIFIED_DATE, d.DECISION_DATE, d.GO_LIVE_DATE,
+            ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
+                IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
+                IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
+                IFF(d.IS_PARTNER_ATTACHED = TRUE OR ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Partner%', 'Partner', NULL),
+                IFF(d.IS_PS_ENGAGED = TRUE OR ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Services Delivery%', 'Services', NULL),
+                IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Industry%' OR ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%FCTO - Industry%', 'Industry', NULL)
+            )), ', ') AS ENGAGEMENT_DRIVERS
         FROM MDM.MDM_INTERFACES.DIM_USE_CASE d,
             LATERAL FLATTEN(d.USE_CASE_TEAM_NAME_LIST) f
         WHERE f.value::STRING IN ('{names_str}')
@@ -603,6 +630,7 @@ stage_filter = st.sidebar.multiselect("Use Case Stage", stage_options)
 account_name_search = st.sidebar.text_input("Account Name", value="", key="account_name_filter", help="Filter by account name (case-insensitive). Leave blank for all.")
 min_acv = st.sidebar.number_input("Min EACV ($)", min_value=0, value=1, step=1, key="min_acv_filter")
 last_n_days = st.sidebar.text_input("Last N Days Modified", value="", key="last_n_days_filter", help="Filter use cases modified in last N days. Leave blank for all.")
+driver_filter = st.sidebar.multiselect("Engagement Driver", ["AFE", "Platform Specialist", "Partner", "Services", "Industry"])
 
 
 emp_filter = ""
@@ -625,15 +653,23 @@ stage_clause = f"AND UC.USE_CASE_STAGE IN ('" + "', '".join(stage_filter) + "')"
 account_name_clause = f"AND UC.ACCOUNT_NAME ILIKE '%{account_name_search.strip().replace(chr(39), chr(39)+chr(39))}%'" if account_name_search.strip() else ""
 modified_clause = f"AND UC.LAST_MODIFIED_DATE >= DATEADD('day', -{int(last_n_days)}, CURRENT_DATE())" if last_n_days.strip() else ""
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["AFE Involved Won+Engagement", "AFE All Engagements", "Overall DE/DL Summary", "Weekly Key Updates", "Consumption Credits", "PSS-AFE Team Commentry"])
+def apply_driver_filter(df):
+    if not driver_filter or df.empty or 'ENGAGEMENT_DRIVERS' not in df.columns:
+        return df
+    mask = pd.Series(False, index=df.index)
+    for d in driver_filter:
+        mask = mask | df['ENGAGEMENT_DRIVERS'].fillna('').str.contains(d, case=False, na=False)
+    return df[mask].reset_index(drop=True)
 
-display_cols = ['ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'ENGINEER', 'MANAGER', 'KEY_FEATURES', 'THEATER', 'GVP']
+tab3, tab1, tab2, tab4, tab5, tab6 = st.tabs(["Overall DE/DL Summary", "AFE Involved Won+Engagement", "AFE All Engagements", "Weekly Key Updates", "Consumption Credits", "PSS-AFE Team Commentry"])
+
+display_cols = ['ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'ENGINEER', 'MANAGER', 'KEY_FEATURES', 'ENGAGEMENT_DRIVERS', 'THEATER', 'GVP']
 
 with tab1:
     st.subheader("Won+ Engagements (Stages 4-7)")
     with st.spinner('Loading won+ engagements...'):
         query = build_afe_query(str(start_date), str(end_date), emp_filter, feature_filter, key_feat_filter, gvp_clause, theater_clause, stage_clause, won_only=True)
-        df_won = run_query(query)
+        df_won = apply_driver_filter(run_query(query))
     
     if not df_won.empty:
         pass
@@ -657,6 +693,7 @@ with tab1:
                 "Select": st.column_config.CheckboxColumn("Select", default=False, width="small"),
                 "EACV": st.column_config.NumberColumn("EACV", format="$%.0f"),
                 "KEY_FEATURES": st.column_config.TextColumn("Key Features", width="medium"),
+                "ENGAGEMENT_DRIVERS": st.column_config.TextColumn("Drivers", width="medium"),
             },
             disabled=[c for c in display_cols],
             hide_index=True,
@@ -716,12 +753,7 @@ with tab2:
     st.subheader("All Engagements")
     with st.spinner('Loading all engagements...'):
         query = build_afe_query(str(start_date), str(end_date), emp_filter, feature_filter, key_feat_filter, gvp_clause, theater_clause, stage_clause, won_only=False)
-        df_all = run_query(query)
-    
-    if not df_all.empty:
-        pass
-    else:
-        pass
+        df_all = apply_driver_filter(run_query(query))
     
     display_metrics(df_all)
     display_stage_chart(df_all, "All Use Cases by Stage")
@@ -740,6 +772,7 @@ with tab2:
                 "Select": st.column_config.CheckboxColumn("Select", default=False, width="small"),
                 "EACV": st.column_config.NumberColumn("EACV", format="$%.0f"),
                 "KEY_FEATURES": st.column_config.TextColumn("Key Features", width="medium"),
+                "ENGAGEMENT_DRIVERS": st.column_config.TextColumn("Drivers", width="medium"),
             },
             disabled=[c for c in display_cols],
             hide_index=True,
@@ -804,6 +837,13 @@ with tab3:
             UC.ACCOUNT_NAME, UC.ACCOUNT_OWNER_NAME AS ACCOUNT_OWNER, UC.ACCOUNT_LEAD_SE_NAME AS ACCOUNT_SE, UC.USE_CASE_NAME,
             UC.USE_CASE_STAGE AS STAGE, UC.USE_CASE_EACV AS EACV, UC.PRIORITIZED_FEATURES AS KEY_FEATURES,
             UC.THEATER_NAME AS THEATER, UC.ACCOUNT_GVP AS GVP, UC.DECISION_DATE, UC.GO_LIVE_DATE, UC.LAST_MODIFIED_DATE,
+            ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
+                IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
+                IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
+                IFF(UC.IS_PARTNER_ATTACHED = TRUE OR ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Partner%', 'Partner', NULL),
+                IFF(UC.IS_PS_ENGAGED = TRUE OR ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Services Delivery%', 'Services', NULL),
+                IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Industry%' OR ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%FCTO - Industry%', 'Industry', NULL)
+            )), ', ') AS ENGAGEMENT_DRIVERS,
             CASE WHEN UC.USE_CASE_STAGE LIKE '1 -%' OR UC.USE_CASE_STAGE LIKE '2 -%' OR UC.USE_CASE_STAGE LIKE '3 -%' THEN 'Stage 1-3'
                  WHEN UC.USE_CASE_STAGE LIKE '4 -%' OR UC.USE_CASE_STAGE LIKE '5 -%' THEN 'Stage 4-5'
                  WHEN UC.USE_CASE_STAGE LIKE '6 -%' OR UC.USE_CASE_STAGE LIKE '7 -%' THEN 'Stage 6-7' ELSE 'Other' END AS STAGE_BUCKET
@@ -814,7 +854,7 @@ with tab3:
           {feature_filter} {key_feat_filter} {gvp_clause} {theater_clause} {modified_clause} {account_name_clause}
         ORDER BY EACV DESC NULLS LAST
         """
-        df_summary = run_query(summary_query)
+        df_summary = apply_driver_filter(run_query(summary_query))
     
     if not df_summary.empty:
         pass
@@ -850,7 +890,7 @@ with tab3:
         st.plotly_chart(fig, use_container_width=True)
         
         st.markdown("### All DE/DL Use Cases")
-        summary_display_cols = ['STAGE_BUCKET', 'ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'KEY_FEATURES', 'ENGINEER']
+        summary_display_cols = ['STAGE_BUCKET', 'ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'KEY_FEATURES', 'ENGAGEMENT_DRIVERS', 'ENGINEER']
         df_summary_display = df_summary[summary_display_cols].copy()
         df_summary_display.insert(0, 'Select', False)
         
@@ -862,6 +902,7 @@ with tab3:
                 "Select": st.column_config.CheckboxColumn("Select", default=False, width="small"),
                 "STAGE_BUCKET": st.column_config.TextColumn("Stage Bucket"),
                 "EACV": st.column_config.NumberColumn("EACV", format="$%.0f"),
+                "ENGAGEMENT_DRIVERS": st.column_config.TextColumn("Drivers", width="medium"),
             },
             disabled=[c for c in summary_display_cols],
             hide_index=True,
@@ -905,6 +946,13 @@ with tab4:
             UC.THEATER_NAME AS THEATER, UC.ACCOUNT_GVP AS GVP, UC.SE_COMMENTS, UC.IMPLEMENTATION_COMMENTS,
             UC.NEXT_STEPS, UC.SPECIALIST_COMMENTS, UC.PARTNER_COMMENTS, UC.DECISION_DATE, UC.GO_LIVE_DATE,
             UC.LAST_MODIFIED_DATE,
+            ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
+                IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
+                IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
+                IFF(UC.IS_PARTNER_ATTACHED = TRUE OR ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Partner%', 'Partner', NULL),
+                IFF(UC.IS_PS_ENGAGED = TRUE OR ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Services Delivery%', 'Services', NULL),
+                IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Industry%' OR ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%FCTO - Industry%', 'Industry', NULL)
+            )), ', ') AS ENGAGEMENT_DRIVERS,
             CASE WHEN UC.USE_CASE_STAGE LIKE '1 -%' OR UC.USE_CASE_STAGE LIKE '2 -%' OR UC.USE_CASE_STAGE LIKE '3 -%' THEN 'Stage 1-3'
                  WHEN UC.USE_CASE_STAGE LIKE '4 -%' OR UC.USE_CASE_STAGE LIKE '5 -%' THEN 'Stage 4-5'
                  WHEN UC.USE_CASE_STAGE LIKE '6 -%' OR UC.USE_CASE_STAGE LIKE '7 -%' THEN 'Stage 6-7' ELSE 'Other' END AS STAGE_BUCKET
@@ -916,7 +964,7 @@ with tab4:
           {gvp_clause} {theater_clause} {key_feat_filter} {modified_clause} {account_name_clause}
         ORDER BY UC.USE_CASE_EACV DESC NULLS LAST
         """
-        df_weekly = run_query(weekly_query)
+        df_weekly = apply_driver_filter(run_query(weekly_query))
     
     if not df_weekly.empty:
         all_key_features = ["DE - Openflow", "DE - Openflow Oracle", "DE - Iceberg", "DE - Snowpark DE", "DE - Snowpark Connect", "DE - Dynamic Tables", "DE - Snowpipe Streaming", "DE - Snowpipe", "DE - Serverless Task", "DE - Connectors", "DE - dbt Projects", "DE - SAP Integration", "DE - Basic"]
@@ -1234,6 +1282,7 @@ with tab6:
         combined_members = afe_team_members
         combined_data = afe_data.copy()
 
+    combined_data = apply_driver_filter(combined_data)
     cutoff_7d = date.today() - timedelta(days=7)
     cutoff_14d = date.today() - timedelta(days=14)
     today_dt = date.today()
@@ -1487,10 +1536,10 @@ with tab6:
     detail["Engagement"] = detail.apply(uc_engagement, axis=1)
     detail = detail.reset_index(drop=True)
 
-    detail_display = detail[["SPECIALIST", "ACCOUNT_NAME", "USE_CASE_NAME", "USE_CASE_STAGE", "USE_CASE_STATUS", "USE_CASE_EACV", "THEATER_NAME", "PRODUCT_CATEGORIES", "Engagement", "DECISION_DATE", "GO_LIVE_DATE", "LAST_MODIFIED_DATE", "SFDC"]].rename(columns={
+    detail_display = detail[["SPECIALIST", "ACCOUNT_NAME", "USE_CASE_NAME", "USE_CASE_STAGE", "USE_CASE_STATUS", "USE_CASE_EACV", "ENGAGEMENT_DRIVERS", "THEATER_NAME", "PRODUCT_CATEGORIES", "Engagement", "DECISION_DATE", "GO_LIVE_DATE", "LAST_MODIFIED_DATE", "SFDC"]].rename(columns={
         "SPECIALIST": "AFE", "ACCOUNT_NAME": "Account", "USE_CASE_NAME": "Use Case",
         "USE_CASE_STAGE": "Stage", "USE_CASE_STATUS": "Status", "USE_CASE_EACV": "EACV",
-        "THEATER_NAME": "Theater", "PRODUCT_CATEGORIES": "Products",
+        "ENGAGEMENT_DRIVERS": "Drivers", "THEATER_NAME": "Theater", "PRODUCT_CATEGORIES": "Products",
         "LAST_MODIFIED_DATE": "Last Modified", "DECISION_DATE": "Decision Date", "GO_LIVE_DATE": "Go Live Date",
     })
 
@@ -1551,9 +1600,10 @@ with tab6:
             for _, row in comments_subset.iterrows():
                 comment_text = str(row["SPECIALIST_COMMENTS"]).strip()[:400]
                 row_features = str(row.get("KEY_FEATURES", "") or "").strip()
+                row_drivers = str(row.get("ENGAGEMENT_DRIVERS", "") or "SE").strip()
                 comment_lines.append(
                     f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | AFE: {row['SPECIALIST']} | "
-                    f"Stage: {row['USE_CASE_STAGE']} | EACV: ${row['USE_CASE_EACV']:,.0f} | Features: {row_features}\n"
+                    f"Stage: {row['USE_CASE_STAGE']} | EACV: ${row['USE_CASE_EACV']:,.0f} | Features: {row_features} | Drivers: {row_drivers}\n"
                     f"  Comment: {comment_text}"
                 )
             comments_block = "\n".join(comment_lines)
