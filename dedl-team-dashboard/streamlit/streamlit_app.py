@@ -507,8 +507,8 @@ def load_afe_use_cases():
             d.PRIORITIZED_FEATURES AS KEY_FEATURES,
             d.USE_CASE_LEAD_SE_NAME AS ENGINEER,
             f.value::STRING AS SPECIALIST,
-            IFF(d.IMPLEMENTATION_COMMENTS IS NOT NULL AND TRIM(d.IMPLEMENTATION_COMMENTS) != '', TRUE, FALSE) AS HAS_IMPLEMENTATION_COMMENTS,
-            d.IMPLEMENTATION_COMMENTS,
+            IFF(d.SPECIALIST_COMMENTS IS NOT NULL AND TRIM(d.SPECIALIST_COMMENTS) != '', TRUE, FALSE) AS HAS_SPECIALIST_COMMENTS,
+            d.SPECIALIST_COMMENTS,
             d.LAST_MODIFIED_DATE, d.DECISION_DATE, d.GO_LIVE_DATE,
             ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
@@ -590,8 +590,8 @@ def load_services_use_cases(svc_names):
             d.PRIORITIZED_FEATURES AS KEY_FEATURES,
             d.USE_CASE_LEAD_SE_NAME AS ENGINEER,
             f.value::STRING AS SPECIALIST,
-            IFF(d.SPECIALIST_COMMENTS IS NOT NULL AND TRIM(d.SPECIALIST_COMMENTS) != '', TRUE, FALSE) AS HAS_SPECIALIST_COMMENTS,
-            d.SPECIALIST_COMMENTS,
+            IFF(d.IMPLEMENTATION_COMMENTS IS NOT NULL AND TRIM(d.IMPLEMENTATION_COMMENTS) != '', TRUE, FALSE) AS HAS_IMPLEMENTATION_COMMENTS,
+            d.IMPLEMENTATION_COMMENTS,
             d.LAST_MODIFIED_DATE, d.DECISION_DATE, d.GO_LIVE_DATE,
             ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
@@ -706,7 +706,7 @@ def apply_driver_filter(df):
         mask = mask | df['ENGAGEMENT_DRIVERS'].fillna('').str.contains(d, case=False, na=False)
     return df[mask].reset_index(drop=True)
 
-tab3, tab1, tab2, tab4, tab5, tab6, tab7 = st.tabs(["Overall DE/DL Summary", "AFE Involved Won+Engagement", "AFE All Engagements", "Weekly Key Updates", "Consumption Credits", "PSS-AFE Team Commentry", "Services Team Commentry"])
+tab3, tab1, tab2, tab4, tab5, tab6, tab7, tab8 = st.tabs(["Overall DE/DL Summary", "AFE Involved Won+Engagement", "AFE All Engagements", "Weekly Key Updates", "Consumption Credits", "PSS-AFE Team Commentry", "Services Team Commentry", "Test"])
 
 display_cols = ['ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'ENGINEER', 'MANAGER', 'KEY_FEATURES', 'ENGAGEMENT_DRIVERS', 'THEATER', 'GVP', 'SFDC']
 
@@ -2156,6 +2156,137 @@ with tab7:
                 st.markdown(f"**Cortex:** {msg['content']}")
     else:
         st.info("No Services engagement data found for the current filters.")
+
+with tab8:
+    st.subheader("Specialist Comment History")
+    st.caption("Track when specialist comments were added or updated on use cases, and by whom")
+
+    @st.cache_data(ttl=600, show_spinner=False)
+    def load_comment_history(eng_names, days_back):
+        names_sql = "', '".join(eng_names)
+        q = f"""
+        WITH team_uc AS (
+            SELECT DISTINCT USE_CASE_ID
+            FROM SALES.SE_REPORTING.DIM_USE_CASE_HISTORY_DS,
+            LATERAL FLATTEN(input => USE_CASE_TEAM_NAME_LIST) n
+            WHERE DS = CURRENT_DATE()
+              AND n.value::STRING IN ('{names_sql}')
+        ),
+        snaps AS (
+            SELECT
+                h.DS,
+                h.USE_CASE_ID,
+                h.USE_CASE_NAME,
+                h.ACCOUNT_NAME,
+                h.SPECIALIST_COMMENTS,
+                h.LAST_MODIFIED_DATE,
+                h.USE_CASE_STAGE,
+                h.USE_CASE_EACV,
+                LAG(h.SPECIALIST_COMMENTS) OVER (PARTITION BY h.USE_CASE_ID ORDER BY h.DS) AS PREV_COMMENTS
+            FROM SALES.SE_REPORTING.DIM_USE_CASE_HISTORY_DS h
+            WHERE h.DS >= DATEADD('day', -{days_back}, CURRENT_DATE())
+              AND h.USE_CASE_ID IN (SELECT USE_CASE_ID FROM team_uc)
+        )
+        SELECT
+            DS AS CHANGE_DATE,
+            USE_CASE_ID,
+            USE_CASE_NAME,
+            ACCOUNT_NAME,
+            SPECIALIST_COMMENTS,
+            LAST_MODIFIED_DATE,
+            USE_CASE_STAGE,
+            USE_CASE_EACV,
+            COALESCE(
+                REGEXP_SUBSTR(SPECIALIST_COMMENTS, '^[0-9]{{4}}[/\\\\-][0-9]{{2}}[/\\\\-][0-9]{{2}}\\\\s*[\\\\-]\\\\s*DE\\\\s*[\\\\-]\\\\s*([A-Z][a-z]+ [A-Z][a-z]+)', 1, 1, 'e'),
+                REGEXP_SUBSTR(SPECIALIST_COMMENTS, '^[0-9]{{4}}[/\\\\-][0-9]{{2}}[/\\\\-][0-9]{{2}}\\\\s*[\\\\-]\\\\s*([A-Z][a-z]+ [A-Z][a-z]+)', 1, 1, 'e'),
+                REGEXP_SUBSTR(SPECIALIST_COMMENTS, '^\\\\[?[0-9]{{1,2}}/[0-9]{{1,2}}/?[0-9]{{0,4}}\\\\]?[:\\\\s]*[\\\\-]?\\\\s*([A-Z][a-z]+ [A-Z][a-z]+)', 1, 1, 'e'),
+                REGEXP_SUBSTR(SPECIALIST_COMMENTS, '^([A-Z][a-z]+ [A-Z][a-z]+)\\\\s*[\\\\-]\\\\s*[0-9]{{1,2}}/[0-9]{{1,2}}', 1, 1, 'e'),
+                'Unknown'
+            ) AS UPDATED_BY
+        FROM snaps
+        WHERE (PREV_COMMENTS IS NULL AND SPECIALIST_COMMENTS IS NOT NULL AND TRIM(SPECIALIST_COMMENTS) != '')
+           OR (SPECIALIST_COMMENTS IS NOT NULL AND SPECIALIST_COMMENTS != COALESCE(PREV_COMMENTS, ''))
+        ORDER BY DS DESC
+        """
+        return run_query(q)
+
+    test_days_back = st.slider("Days of history", min_value=7, max_value=180, value=30, step=7, key="test_days_back")
+
+    with st.spinner("Loading specialist comment history..."):
+        hist_engineers = all_engineers
+        if engineer_filter:
+            hist_engineers = engineer_filter
+        elif manager_filter:
+            hist_engineers = []
+            for mgr in manager_filter:
+                hist_engineers.extend(ENGINEER_LIST.get(mgr, []))
+        hist_df = load_comment_history(hist_engineers, test_days_back)
+
+    if hist_df is not None and not hist_df.empty:
+        hist_df['CHANGE_DATE'] = pd.to_datetime(hist_df['CHANGE_DATE'])
+        hist_df['EACV'] = pd.to_numeric(hist_df['USE_CASE_EACV'], errors='coerce').fillna(0)
+        hist_df['COMMENT_PREVIEW'] = hist_df['SPECIALIST_COMMENTS'].fillna('').str[:200] + '...'
+        hist_df['SFDC'] = hist_df['USE_CASE_ID'].apply(lambda x: f"https://snowflakecomputing.lightning.force.com/lightning/r/Use_Case__c/{x}/view")
+
+        hc1, hc2, hc3, hc4 = st.columns(4)
+        with hc1:
+            st.markdown(f'<div class="metric-card metric-neutral"><div class="label">Total Updates</div><div class="value">{len(hist_df)}</div></div>', unsafe_allow_html=True)
+        with hc2:
+            unique_uc = hist_df['USE_CASE_ID'].nunique()
+            st.markdown(f'<div class="metric-card metric-green"><div class="label">Use Cases Updated</div><div class="value">{unique_uc}</div></div>', unsafe_allow_html=True)
+        with hc3:
+            unique_updaters = hist_df[hist_df['UPDATED_BY'] != 'Unknown']['UPDATED_BY'].nunique()
+            st.markdown(f'<div class="metric-card metric-amber"><div class="label">Unique Updaters</div><div class="value">{unique_updaters}</div></div>', unsafe_allow_html=True)
+        with hc4:
+            total_eacv = hist_df.drop_duplicates(subset='USE_CASE_ID')['EACV'].sum()
+            st.markdown(f'<div class="metric-card metric-neutral"><div class="label">Pipeline Touched</div><div class="value">${total_eacv:,.0f}</div></div>', unsafe_allow_html=True)
+
+        st.markdown("")
+
+        updates_by_date = hist_df.groupby(hist_df['CHANGE_DATE'].dt.date).size().reset_index(name='UPDATES')
+        updates_by_date.columns = ['Date', 'Updates']
+        fig_timeline = px.bar(updates_by_date, x='Date', y='Updates', title='Comment Updates Over Time')
+        fig_timeline.update_layout(height=300, margin=dict(l=20, r=20, t=40, b=20))
+        st.plotly_chart(fig_timeline, use_container_width=True)
+
+        updater_counts = hist_df[hist_df['UPDATED_BY'] != 'Unknown'].groupby('UPDATED_BY').size().reset_index(name='UPDATES').sort_values('UPDATES', ascending=False)
+        if not updater_counts.empty:
+            fig_updaters = px.bar(updater_counts.head(20), x='UPDATED_BY', y='UPDATES', title='Top Updaters')
+            fig_updaters.update_layout(height=300, margin=dict(l=20, r=20, t=40, b=20), xaxis_title='', xaxis_tickangle=-45)
+            st.plotly_chart(fig_updaters, use_container_width=True)
+
+        st.markdown("### Change Log")
+        test_fc1, test_fc2 = st.columns(2)
+        with test_fc1:
+            updater_options = ["All"] + sorted(hist_df[hist_df['UPDATED_BY'] != 'Unknown']['UPDATED_BY'].unique().tolist())
+            test_updater_filter = st.selectbox("Filter by Updater", updater_options, key="test_updater_filter")
+        with test_fc2:
+            test_account_search = st.text_input("Search Account", key="test_account_search")
+
+        display_hist = hist_df.copy()
+        if test_updater_filter != "All":
+            display_hist = display_hist[display_hist['UPDATED_BY'] == test_updater_filter]
+        if test_account_search.strip():
+            display_hist = display_hist[display_hist['ACCOUNT_NAME'].str.contains(test_account_search.strip(), case=False, na=False)]
+
+        show_cols = ['CHANGE_DATE', 'UPDATED_BY', 'ACCOUNT_NAME', 'USE_CASE_NAME', 'USE_CASE_STAGE', 'EACV', 'COMMENT_PREVIEW', 'SFDC']
+        show_cols = [c for c in show_cols if c in display_hist.columns]
+        st.dataframe(
+            display_hist[show_cols].rename(columns={
+                'CHANGE_DATE': 'Date', 'UPDATED_BY': 'Updated By', 'ACCOUNT_NAME': 'Account',
+                'USE_CASE_NAME': 'Use Case', 'USE_CASE_STAGE': 'Stage', 'EACV': 'EACV',
+                'COMMENT_PREVIEW': 'Comment Preview', 'SFDC': 'SFDC Link'
+            }),
+            column_config={
+                'SFDC Link': st.column_config.LinkColumn("SFDC", display_text="Open"),
+                'EACV': st.column_config.NumberColumn("EACV", format="$%.0f"),
+                'Date': st.column_config.DateColumn("Date"),
+            },
+            hide_index=True, use_container_width=True, height=600
+        )
+        st.caption(f"Showing {len(display_hist)} comment changes over last {test_days_back} days")
+    else:
+        st.info("No specialist comment changes found for the selected filters and time range.")
 
 st.markdown("---")
 st.markdown("## 💬 Ask Cortex")
