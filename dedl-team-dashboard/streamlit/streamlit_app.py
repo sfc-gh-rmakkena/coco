@@ -463,19 +463,6 @@ def render_rich_ai_summary(ai_result, summary_id="ai_summary"):
     <div id="{summary_id}_container" style="background:#1a1d23;border:1px solid #3a3f47;border-radius:12px;padding:24px 28px;margin:12px 0;position:relative">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
             <span style="font-size:12px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:1px">AI Analysis</span>
-            <button onclick="
-                var el = document.getElementById('{summary_id}_content');
-                var range = document.createRange();
-                range.selectNodeContents(el);
-                var sel = window.getSelection();
-                sel.removeAllRanges();
-                sel.addRange(range);
-                document.execCommand('copy');
-                sel.removeAllRanges();
-                this.innerText='Copied!';
-                this.style.background='#21c354';
-                setTimeout(function(){{ document.querySelector('[data-copy-btn={summary_id}]').innerText='Copy for Slides / Email'; document.querySelector('[data-copy-btn={summary_id}]').style.background='#29B5E8'; }}, 2000);
-            " data-copy-btn="{summary_id}" style="background:#29B5E8;color:#fff;border:none;border-radius:6px;padding:6px 16px;font-size:12px;font-weight:600;cursor:pointer;transition:background 0.2s">Copy for Slides / Email</button>
         </div>
         <div id="{summary_id}_content" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
             {rich_html}
@@ -483,6 +470,14 @@ def render_rich_ai_summary(ai_result, summary_id="ai_summary"):
     </div>
     '''
     st.markdown(container_html, unsafe_allow_html=True)
+    if st.button("📋 Copy for Slides / Email", key=f"{summary_id}_copy_btn"):
+        st.session_state[f'{summary_id}_show_copy'] = True
+    if st.session_state.get(f'{summary_id}_show_copy'):
+        st.code(ai_result, language=None)
+        st.caption("Use the copy button (top-right of code block) to copy, then click below to hide.")
+        if st.button("Hide", key=f"{summary_id}_hide_btn"):
+            st.session_state[f'{summary_id}_show_copy'] = False
+            st.rerun()
 
 SFDC_BASE = "https://snowforce.lightning.force.com/lightning/r/vh__Deliverable__c"
 
@@ -1608,9 +1603,15 @@ if active_tab == "PSS-AFE Team Commentry":
             )
             with st.spinner("Analyzing specialist comments with Cortex AI..."):
                 ai_result = generate_ai_summary(ai_prompt)
-            render_rich_ai_summary(ai_result, summary_id="afe_bw_ai_summary")
-            truncated_note = f" (top {max_comments} by EACV shown to AI)" if truncated else ""
-            st.caption(f"Analyzed {len(comments_data)} use cases with comments out of {len(selected_detail)} selected{truncated_note}")
+            st.session_state['afe_bw_ai_result'] = ai_result
+            st.session_state['afe_bw_ai_caption'] = f"Analyzed {len(comments_data)} use cases with comments out of {len(selected_detail)} selected" + (f" (top {max_comments} by EACV shown to AI)" if truncated else "")
+
+    if st.session_state.get('afe_bw_ai_result'):
+        render_rich_ai_summary(st.session_state['afe_bw_ai_result'], summary_id="afe_bw_ai_summary")
+        st.caption(st.session_state.get('afe_bw_ai_caption', ''))
+        if st.button("Clear Summary", key="afe_bw_clear_btn"):
+            st.session_state['afe_bw_ai_result'] = None
+            st.rerun()
 
     if not has_selection and not detail.empty:
         st.info("Check 'Select All Use Cases' or pick specific use cases above to generate an AI summary of specialist comments.")
@@ -2022,9 +2023,15 @@ if active_tab == "Services Team Commentry":
                 )
                 with st.spinner("Analyzing specialist comments with Cortex AI..."):
                     svc_ai_result = generate_ai_summary(svc_ai_prompt)
-                render_rich_ai_summary(svc_ai_result, summary_id="svc_bw_ai_summary")
-                svc_truncated_note = f" (top {svc_max_comments} by EACV shown to AI)" if svc_truncated else ""
-                st.caption(f"Analyzed {len(svc_comments_data)} use cases with comments out of {len(svc_selected_detail)} selected{svc_truncated_note}")
+                st.session_state['svc_bw_ai_result'] = svc_ai_result
+                st.session_state['svc_bw_ai_caption'] = f"Analyzed {len(svc_comments_data)} use cases with comments out of {len(svc_selected_detail)} selected" + (f" (top {svc_max_comments} by EACV shown to AI)" if svc_truncated else "")
+
+        if st.session_state.get('svc_bw_ai_result'):
+            render_rich_ai_summary(st.session_state['svc_bw_ai_result'], summary_id="svc_bw_ai_summary")
+            st.caption(st.session_state.get('svc_bw_ai_caption', ''))
+            if st.button("Clear Summary", key="svc_bw_clear_btn"):
+                st.session_state['svc_bw_ai_result'] = None
+                st.rerun()
 
         if not svc_has_selection and not svc_detail.empty:
             st.info("Check 'Select All Use Cases' or pick specific use cases above to generate an AI summary of specialist comments.")

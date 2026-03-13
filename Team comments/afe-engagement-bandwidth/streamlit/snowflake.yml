@@ -1,0 +1,14 @@
+definition_version: 2
+entities:
+  afe_engagement_bandwidth:
+    type: streamlit
+    identifier:
+      name: DEAFE_ENGAGEMENT_BANDWIDTH
+      database: TEMP
+      schema: AI_PSE_IMPACT
+    query_warehouse: PSE_WH
+    title: "AFE Engagement Bandwidth"
+    main_file: streamlit_app.py
+    artifacts:
+      - streamlit_app.py
+      - environment.yml
