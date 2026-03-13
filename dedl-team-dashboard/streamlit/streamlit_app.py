@@ -381,7 +381,7 @@ def generate_ai_summary(prompt):
     try:
         conn = get_connection()
         escaped_prompt = prompt.replace("'", "''")
-        query = f"SELECT SNOWFLAKE.CORTEX.COMPLETE('mistral-large2', '{escaped_prompt}') as summary"
+        query = f"SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-3-5-sonnet', '{escaped_prompt}') as summary"
         if hasattr(conn, 'sql'):
             return conn.sql(query).to_pandas()['SUMMARY'].iloc[0]
         else:
@@ -392,6 +392,9 @@ def generate_ai_summary(prompt):
             return result
     except Exception as e:
         return f"Error generating summary: {str(e)}"
+
+def escape_latex(text):
+    return text.replace("$", "\\$") if isinstance(text, str) else text
 
 def md_to_rich_html(md_text):
     lines = md_text.split("\n")
@@ -706,94 +709,12 @@ def apply_driver_filter(df):
         mask = mask | df['ENGAGEMENT_DRIVERS'].fillna('').str.contains(d, case=False, na=False)
     return df[mask].reset_index(drop=True)
 
-tab3, tab1, tab2, tab4, tab5, tab6, tab7, tab8 = st.tabs(["Overall DE/DL Summary", "AFE Involved Won+Engagement", "AFE All Engagements", "Weekly Key Updates", "Consumption Credits", "PSS-AFE Team Commentry", "Services Team Commentry", "Test"])
+TAB_NAMES = ["Overall DE/DL Summary", "AFE All Engagements", "Weekly Key Updates", "Consumption Credits", "PSS-AFE Team Commentry", "Services Team Commentry", "Test"]
+active_tab = st.radio("", TAB_NAMES, horizontal=True, label_visibility="collapsed", key="active_tab")
 
 display_cols = ['ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'ENGINEER', 'MANAGER', 'KEY_FEATURES', 'ENGAGEMENT_DRIVERS', 'THEATER', 'GVP', 'SFDC']
 
-with tab1:
-    st.subheader("Won+ Engagements (Stages 4-7)")
-    with st.spinner('Loading won+ engagements...'):
-        query = build_afe_query(str(start_date), str(end_date), emp_filter, feature_filter, key_feat_filter, gvp_clause, theater_clause, stage_clause, won_only=True)
-        df_won = apply_driver_filter(run_query(query))
-    
-    if not df_won.empty:
-        df_won["SFDC"] = df_won["USE_CASE_ID"].apply(lambda uid: f"{SFDC_BASE}/{uid}/view" if uid else "")
-    
-    display_metrics(df_won)
-    display_stage_chart(df_won, "Won+ Use Cases by Stage")
-    
-    st.markdown("---")
-    
-    if not df_won.empty:
-        df_won_display = df_won[display_cols].copy()
-        df_won_display.insert(0, 'Select', False)
-        
-        edited_won = st.data_editor(
-            df_won_display,
-            use_container_width=True,
-            height=400,
-            column_config={
-                "Select": st.column_config.CheckboxColumn("Select", default=False, width="small"),
-                "EACV": st.column_config.NumberColumn("EACV", format="$%.0f"),
-                "KEY_FEATURES": st.column_config.TextColumn("Key Features", width="medium"),
-                "ENGAGEMENT_DRIVERS": st.column_config.TextColumn("Drivers", width="medium"),
-                "SFDC": st.column_config.LinkColumn("SFDC", display_text=r".*/(.+)/view"),
-            },
-            disabled=[c for c in display_cols],
-            hide_index=True,
-            key="won_editor"
-        )
-        st.caption(f"Showing {len(df_won)} won+ engagements | Select rows using checkboxes")
-        
-        selected_won_indices = edited_won[edited_won['Select'] == True].index.tolist()
-        selected_won_rows = df_won.iloc[selected_won_indices] if selected_won_indices else pd.DataFrame()
-        
-        email_df_won = selected_won_rows if not selected_won_rows.empty else df_won
-        render_email_section(email_df_won, "DE/DL Won+ Portfolio Summary", st.session_state.get('won_ai_result'), "won")
-        
-        st.markdown("### 🤖 AI Summary")
-        col_ai1, col_ai2 = st.columns([1, 1])
-        with col_ai1:
-            if st.button("📊 Generate AI Summary for All Won+", key="won_bulk_btn"):
-                st.session_state['won_bulk_analysis'] = True
-                st.session_state['won_usecase_analysis'] = False
-        with col_ai2:
-            if len(selected_won_rows) > 0 and len(selected_won_rows) <= 5:
-                if st.button(f"🔎 AI Analysis for {len(selected_won_rows)} Selected", key="won_usecase_btn"):
-                    st.session_state['won_usecase_analysis'] = True
-                    st.session_state['won_bulk_analysis'] = False
-            elif len(selected_won_rows) > 5:
-                st.warning("Select max 5 use cases")
-            else:
-                st.info("💡 Select accounts above for individual analysis")
-        
-        if st.session_state.get('won_bulk_analysis'):
-            with st.container():
-                prompt = build_bulk_ai_prompt(df_won)
-                with st.spinner("Generating AI Summary..."):
-                    result = generate_ai_summary(prompt)
-                st.markdown(result)
-                st.session_state['won_ai_result'] = result
-                
-                if st.button("Clear Summary", key="won_clear"):
-                    st.session_state['won_bulk_analysis'] = False
-                    st.rerun()
-        
-        if st.session_state.get('won_usecase_analysis') and len(selected_won_rows) > 0:
-            st.markdown("#### 🔍 Selected Use Case Analysis")
-            for idx, row in selected_won_rows.iterrows():
-                with st.expander(f"📋 {row['ACCOUNT_NAME']} - {row['USE_CASE_NAME']} (${row['EACV']:,.0f})", expanded=True):
-                    prompt = build_usecase_ai_prompt(row)
-                    with st.spinner("Analyzing..."):
-                        result = generate_ai_summary(prompt)
-                    st.markdown(result)
-            if st.button("Clear Use Case Analysis", key="won_usecase_clear"):
-                st.session_state['won_usecase_analysis'] = False
-                st.rerun()
-    else:
-        st.info("No won+ engagements found with current filters.")
-
-with tab2:
+if active_tab == "AFE All Engagements":
     st.subheader("All Engagements")
     with st.spinner('Loading all engagements...'):
         query = build_afe_query(str(start_date), str(end_date), emp_filter, feature_filter, key_feat_filter, gvp_clause, theater_clause, stage_clause, won_only=False)
@@ -855,7 +776,7 @@ with tab2:
                 prompt = build_bulk_ai_prompt(df_all)
                 with st.spinner("Generating AI Summary..."):
                     result = generate_ai_summary(prompt)
-                st.markdown(result)
+                st.markdown(escape_latex(result))
                 st.session_state['all_ai_result'] = result
                 
                 if st.button("Clear Summary", key="all_clear"):
@@ -869,14 +790,14 @@ with tab2:
                     prompt = build_usecase_ai_prompt(row)
                     with st.spinner("Analyzing..."):
                         result = generate_ai_summary(prompt)
-                    st.markdown(result)
+                    st.markdown(escape_latex(result))
             if st.button("Clear Use Case Analysis", key="all_usecase_clear"):
                 st.session_state['all_usecase_analysis'] = False
                 st.rerun()
     else:
         st.info("No engagements found with current filters.")
 
-with tab3:
+if active_tab == "Overall DE/DL Summary":
     st.subheader("DE/DL Use Cases Summary")
     with st.spinner('Loading summary...'):
         summary_stage_where = stage_clause if stage_filter else "AND UC.USE_CASE_STAGE NOT LIKE '0 -%' AND UC.USE_CASE_STAGE NOT LIKE '8 -%'"
@@ -972,7 +893,7 @@ with tab3:
                 prompt = build_bulk_ai_prompt(df_summary)
                 with st.spinner("Generating AI Summary..."):
                     result = generate_ai_summary(prompt)
-                st.markdown(result)
+                st.markdown(escape_latex(result))
                 st.session_state['summary_ai_result'] = result
                 
                 if st.button("Clear Summary", key="summary_clear"):
@@ -981,7 +902,7 @@ with tab3:
     else:
         st.info("No use cases found with the selected filters.")
 
-with tab4:
+if active_tab == "Weekly Key Updates":
     st.subheader("Weekly Key Updates")
     st.caption("Use cases grouped by Key Feature, broken down by stage bucket (1-3, 4-5, 6-7)")
     with st.spinner('Loading...'):
@@ -1074,7 +995,7 @@ with tab4:
                             prompt = build_weekly_usecase_ai_prompt(row)
                             with st.spinner(f"Analyzing {row['ACCOUNT_NAME']}..."):
                                 ai_result = generate_ai_summary(prompt)
-                            st.markdown(ai_result)
+                            st.markdown(escape_latex(ai_result))
                     if st.button("Clear Analysis", key=f"weekly_clear_{key_feat}"):
                         st.session_state[f'weekly_ai_{key_feat}'] = False
                         st.rerun()
@@ -1086,7 +1007,7 @@ with tab4:
     else:
         st.info("No use cases found matching the criteria.")
 
-with tab5:
+if active_tab == "Consumption Credits":
     st.subheader("DE Feature Consumption Credits (Last 60 Days)")
 
     with st.spinner('Loading consumption data...'):
@@ -1241,7 +1162,7 @@ Data (top features by total credits):
 Keep it concise with bullet points."""
                 with st.spinner("Generating AI Summary..."):
                     result = generate_ai_summary(prompt)
-                st.markdown(result)
+                st.markdown(escape_latex(result))
                 st.session_state['consumption_ai_result'] = result
                 if st.button("Clear Summary", key="consumption_clear"):
                     st.session_state['consumption_ai_analysis'] = False
@@ -1261,7 +1182,7 @@ Answer this question: {consumption_question}
 Be concise and data-driven."""
                 with st.spinner("Analyzing..."):
                     answer = generate_ai_summary(prompt)
-                st.markdown(answer)
+                st.markdown(escape_latex(answer))
         else:
             customer_search = st.text_input("Enter customer name or use case to search...", key="customer_search_input", placeholder="e.g. Netflix, Uber, streaming pipeline...")
             if customer_search:
@@ -1288,7 +1209,7 @@ Answer this question: {customer_question}
 Provide account name, top features, total credits, and any notable patterns. Be concise and data-driven."""
                         with st.spinner("Analyzing customer data..."):
                             answer = generate_ai_summary(prompt)
-                        st.markdown(answer)
+                        st.markdown(escape_latex(answer))
                     elif not df_customer.empty:
                         auto_prompt = f"""Provide a brief summary of this customer's DE consumption data (last 60 days):
 
@@ -1298,11 +1219,11 @@ Include: account name(s), top features by credits, use cases, segments, and any 
                         with st.spinner("Generating customer summary..."):
                             summary = generate_ai_summary(auto_prompt)
                         st.markdown("**AI Summary:**")
-                        st.markdown(summary)
+                        st.markdown(escape_latex(summary))
     else:
         st.info("No consumption data found for the last 60 days.")
 
-with tab6:
+if active_tab == "PSS-AFE Team Commentry":
     st.subheader("DE Team Engagement Tracker")
     with st.spinner("Loading engagement data..."):
         afe_org = load_afe_org()
@@ -1733,9 +1654,9 @@ with tab6:
         if msg["role"] == "user":
             st.markdown(f"**You:** {msg['content']}")
         else:
-            st.markdown(f"**Cortex:** {msg['content']}")
+            st.markdown(f"**Cortex:** {escape_latex(msg['content'])}")
 
-with tab7:
+if active_tab == "Services Team Commentry":
     st.subheader("Services Team Engagement Tracker")
     with st.spinner("Loading engagement data..."):
         svc_org = load_services_org()
@@ -2148,11 +2069,11 @@ with tab7:
             if msg["role"] == "user":
                 st.markdown(f"**You:** {msg['content']}")
             else:
-                st.markdown(f"**Cortex:** {msg['content']}")
+                st.markdown(f"**Cortex:** {escape_latex(msg['content'])}")
     else:
         st.info("No Services engagement data found for the current filters.")
 
-with tab8:
+if active_tab == "Test":
     st.subheader("Specialist Comment History")
     st.caption("Track when specialist comments were added or updated on use cases, and by whom")
 
@@ -2368,7 +2289,7 @@ if prompt := st.chat_input("Ask about DE/DL engagements (e.g., 'show me use case
     with st.chat_message("assistant"):
         with st.spinner("Analyzing use case data..."):
             analysis, filtered_df = cortex_chat_query(prompt, cortex_base_df)
-        st.markdown(analysis)
+        st.markdown(escape_latex(analysis))
         if not filtered_df.empty:
             st.markdown(f"**Matching Use Cases ({len(filtered_df)}):**")
             st.dataframe(filtered_df, use_container_width=True, height=300)
