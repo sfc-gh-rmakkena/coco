@@ -338,11 +338,35 @@ def build_afe_query(start_date, end_date, emp_filter, feature_filter, key_feat_f
     else:
         afe_stage_clause = "AND UC.USE_CASE_STAGE NOT LIKE '0 -%' AND UC.USE_CASE_STAGE NOT LIKE '8 -%'"
     return f"""
-    WITH {dedl_cte}
+    WITH {dedl_cte},
+    specialist_cte AS (
+        SELECT UC2.USE_CASE_ID,
+            LISTAGG(DISTINCT f_name.value::STRING || ' (' ||
+                CASE f_role.value::STRING
+                    WHEN 'SE - Workload FCTO' THEN 'AFE'
+                    WHEN 'Platform Specialist' THEN 'Platform'
+                    WHEN 'SE - Partner' THEN 'Partner SE'
+                    WHEN 'Partner Account Manager' THEN 'Partner'
+                    WHEN 'Partner Solutions Architect' THEN 'Partner SA'
+                    WHEN 'Services Delivery Manager' THEN 'Services'
+                    WHEN 'SE - Enterprise Architect' THEN 'EA'
+                    WHEN 'Industry Principal' THEN 'Industry'
+                    WHEN 'SE - Industry CTO' THEN 'Industry'
+                    WHEN 'SE - Security FCTO' THEN 'Security'
+                    WHEN 'SE - Performance FCTO' THEN 'Performance'
+                END || ')', ', ') AS SPECIALISTS
+        FROM MDM.MDM_INTERFACES.DIM_USE_CASE UC2,
+        LATERAL FLATTEN(UC2.USE_CASE_TEAM_NAME_LIST) f_name,
+        LATERAL FLATTEN(UC2.USE_CASE_TEAM_ROLE_LIST) f_role
+        WHERE f_name.index = f_role.index
+          AND f_role.value::STRING IN ('SE - Workload FCTO', 'Platform Specialist', 'SE - Partner', 'Partner Account Manager', 'Partner Solutions Architect', 'Services Delivery Manager', 'SE - Enterprise Architect', 'Industry Principal', 'SE - Industry CTO', 'SE - Security FCTO', 'SE - Performance FCTO')
+        GROUP BY UC2.USE_CASE_ID
+    )
     SELECT UC.USE_CASE_ID, LISTAGG(DISTINCT D.EMPLOYEE_NAME, ', ') WITHIN GROUP (ORDER BY D.EMPLOYEE_NAME) AS ENGINEER,
         MAX(D.FIRST_LINE_MANAGER) AS MANAGER, UC.ACCOUNT_NAME, UC.ACCOUNT_OWNER_NAME AS ACCOUNT_OWNER, UC.ACCOUNT_LEAD_SE_NAME AS ACCOUNT_SE, UC.USE_CASE_NAME,
         UC.USE_CASE_STAGE AS STAGE, UC.USE_CASE_EACV AS EACV, UC.TECHNICAL_USE_CASE, UC.PRIORITIZED_FEATURES AS KEY_FEATURES,
         UC.THEATER_NAME AS THEATER, UC.ACCOUNT_GVP AS GVP, UC.DECISION_DATE, UC.GO_LIVE_DATE, UC.SE_COMMENTS, UC.NEXT_STEPS, UC.LAST_MODIFIED_DATE,
+        COALESCE(sp.SPECIALISTS, '') AS SPECIALISTS,
         ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
             IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
             IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
@@ -352,12 +376,13 @@ def build_afe_query(start_date, end_date, emp_filter, feature_filter, key_feat_f
         )), ', ') AS ENGAGEMENT_DRIVERS
     FROM DEDL_ATTRIBUTION D
     INNER JOIN MDM.MDM_INTERFACES.DIM_USE_CASE UC ON D.USE_CASE_ID = UC.USE_CASE_ID
+    LEFT JOIN specialist_cte sp ON sp.USE_CASE_ID = UC.USE_CASE_ID
     WHERE 1=1 {afe_stage_clause}
       AND (UC.DECISION_DATE BETWEEN '{start_date}' AND '{end_date}' OR UC.GO_LIVE_DATE BETWEEN '{start_date}' AND '{end_date}')
       {feature_filter} {key_feat_filter} {gvp_clause} {theater_clause} {modified_clause} {account_name_clause}
     GROUP BY UC.USE_CASE_ID, UC.ACCOUNT_NAME, UC.ACCOUNT_OWNER_NAME, UC.ACCOUNT_LEAD_SE_NAME, UC.USE_CASE_NAME, UC.USE_CASE_STAGE, UC.USE_CASE_EACV,
              UC.TECHNICAL_USE_CASE, UC.PRIORITIZED_FEATURES, UC.THEATER_NAME, UC.ACCOUNT_GVP, UC.DECISION_DATE, UC.GO_LIVE_DATE, UC.SE_COMMENTS, UC.NEXT_STEPS, UC.LAST_MODIFIED_DATE,
-             UC.USE_CASE_TEAM_ROLE_LIST, UC.IS_PARTNER_ATTACHED, UC.IS_PS_ENGAGED
+             UC.USE_CASE_TEAM_ROLE_LIST, UC.IS_PARTNER_ATTACHED, UC.IS_PS_ENGAGED, sp.SPECIALISTS
     ORDER BY UC.USE_CASE_EACV DESC NULLS LAST
     """
 
@@ -498,6 +523,29 @@ def load_afe_org():
 @st.cache_data(ttl=600, show_spinner=False)
 def load_afe_use_cases():
     query = """
+        WITH specialist_cte AS (
+            SELECT UC2.USE_CASE_ID,
+                LISTAGG(DISTINCT f_name.value::STRING || ' (' ||
+                    CASE f_role.value::STRING
+                        WHEN 'SE - Workload FCTO' THEN 'AFE'
+                        WHEN 'Platform Specialist' THEN 'Platform'
+                        WHEN 'SE - Partner' THEN 'Partner SE'
+                        WHEN 'Partner Account Manager' THEN 'Partner'
+                        WHEN 'Partner Solutions Architect' THEN 'Partner SA'
+                        WHEN 'Services Delivery Manager' THEN 'Services'
+                        WHEN 'SE - Enterprise Architect' THEN 'EA'
+                        WHEN 'Industry Principal' THEN 'Industry'
+                        WHEN 'SE - Industry CTO' THEN 'Industry'
+                        WHEN 'SE - Security FCTO' THEN 'Security'
+                        WHEN 'SE - Performance FCTO' THEN 'Performance'
+                    END || ')', ', ') AS SPECIALISTS
+            FROM MDM.MDM_INTERFACES.DIM_USE_CASE UC2,
+            LATERAL FLATTEN(UC2.USE_CASE_TEAM_NAME_LIST) f_name,
+            LATERAL FLATTEN(UC2.USE_CASE_TEAM_ROLE_LIST) f_role
+            WHERE f_name.index = f_role.index
+              AND f_role.value::STRING IN ('SE - Workload FCTO', 'Platform Specialist', 'SE - Partner', 'Partner Account Manager', 'Partner Solutions Architect', 'Services Delivery Manager', 'SE - Enterprise Architect', 'Industry Principal', 'SE - Industry CTO', 'SE - Security FCTO', 'SE - Performance FCTO')
+            GROUP BY UC2.USE_CASE_ID
+        )
         SELECT
             d.USE_CASE_ID, d.USE_CASE_NAME, d.ACCOUNT_NAME, d.USE_CASE_EACV,
             d.USE_CASE_STAGE, d.USE_CASE_STATUS, d.THEATER_NAME, d.REGION_NAME,
@@ -508,6 +556,7 @@ def load_afe_use_cases():
             IFF(d.SPECIALIST_COMMENTS IS NOT NULL AND TRIM(d.SPECIALIST_COMMENTS) != '', TRUE, FALSE) AS HAS_SPECIALIST_COMMENTS,
             d.SPECIALIST_COMMENTS,
             d.LAST_MODIFIED_DATE, d.DECISION_DATE, d.GO_LIVE_DATE,
+            COALESCE(sp.SPECIALISTS, '') AS SPECIALISTS,
             ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
@@ -515,7 +564,8 @@ def load_afe_use_cases():
                 IFF(d.IS_PS_ENGAGED = TRUE OR ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Services Delivery%', 'Services', NULL),
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Industry%' OR ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%FCTO - Industry%', 'Industry', NULL)
             )), ', ') AS ENGAGEMENT_DRIVERS
-        FROM MDM.MDM_INTERFACES.DIM_USE_CASE d,
+        FROM MDM.MDM_INTERFACES.DIM_USE_CASE d
+        LEFT JOIN specialist_cte sp ON sp.USE_CASE_ID = d.USE_CASE_ID,
             LATERAL FLATTEN(d.USE_CASE_TEAM_NAME_LIST) f,
             LATERAL FLATTEN(d.USE_CASE_TEAM_ROLE_LIST) r
         WHERE f.index = r.index
@@ -539,6 +589,29 @@ def load_pss_org():
 def load_pss_use_cases(pss_names):
     names_str = "', '".join([n.replace("'", "''") for n in pss_names])
     query = f"""
+        WITH specialist_cte AS (
+            SELECT UC2.USE_CASE_ID,
+                LISTAGG(DISTINCT f_name.value::STRING || ' (' ||
+                    CASE f_role.value::STRING
+                        WHEN 'SE - Workload FCTO' THEN 'AFE'
+                        WHEN 'Platform Specialist' THEN 'Platform'
+                        WHEN 'SE - Partner' THEN 'Partner SE'
+                        WHEN 'Partner Account Manager' THEN 'Partner'
+                        WHEN 'Partner Solutions Architect' THEN 'Partner SA'
+                        WHEN 'Services Delivery Manager' THEN 'Services'
+                        WHEN 'SE - Enterprise Architect' THEN 'EA'
+                        WHEN 'Industry Principal' THEN 'Industry'
+                        WHEN 'SE - Industry CTO' THEN 'Industry'
+                        WHEN 'SE - Security FCTO' THEN 'Security'
+                        WHEN 'SE - Performance FCTO' THEN 'Performance'
+                    END || ')', ', ') AS SPECIALISTS
+            FROM MDM.MDM_INTERFACES.DIM_USE_CASE UC2,
+            LATERAL FLATTEN(UC2.USE_CASE_TEAM_NAME_LIST) f_name,
+            LATERAL FLATTEN(UC2.USE_CASE_TEAM_ROLE_LIST) f_role
+            WHERE f_name.index = f_role.index
+              AND f_role.value::STRING IN ('SE - Workload FCTO', 'Platform Specialist', 'SE - Partner', 'Partner Account Manager', 'Partner Solutions Architect', 'Services Delivery Manager', 'SE - Enterprise Architect', 'Industry Principal', 'SE - Industry CTO', 'SE - Security FCTO', 'SE - Performance FCTO')
+            GROUP BY UC2.USE_CASE_ID
+        )
         SELECT
             d.USE_CASE_ID, d.USE_CASE_NAME, d.ACCOUNT_NAME, d.USE_CASE_EACV,
             d.USE_CASE_STAGE, d.USE_CASE_STATUS, d.THEATER_NAME, d.REGION_NAME,
@@ -549,6 +622,7 @@ def load_pss_use_cases(pss_names):
             IFF(d.SPECIALIST_COMMENTS IS NOT NULL AND TRIM(d.SPECIALIST_COMMENTS) != '', TRUE, FALSE) AS HAS_SPECIALIST_COMMENTS,
             d.SPECIALIST_COMMENTS,
             d.LAST_MODIFIED_DATE, d.DECISION_DATE, d.GO_LIVE_DATE,
+            COALESCE(sp.SPECIALISTS, '') AS SPECIALISTS,
             ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
@@ -556,7 +630,8 @@ def load_pss_use_cases(pss_names):
                 IFF(d.IS_PS_ENGAGED = TRUE OR ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Services Delivery%', 'Services', NULL),
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Industry%' OR ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%FCTO - Industry%', 'Industry', NULL)
             )), ', ') AS ENGAGEMENT_DRIVERS
-        FROM MDM.MDM_INTERFACES.DIM_USE_CASE d,
+        FROM MDM.MDM_INTERFACES.DIM_USE_CASE d
+        LEFT JOIN specialist_cte sp ON sp.USE_CASE_ID = d.USE_CASE_ID,
             LATERAL FLATTEN(d.USE_CASE_TEAM_NAME_LIST) f
         WHERE f.value::STRING IN ('{names_str}')
         ORDER BY d.USE_CASE_EACV DESC NULLS LAST
@@ -581,6 +656,29 @@ def load_services_org():
 def load_services_use_cases(svc_names):
     names_str = "', '".join([n.replace("'", "''") for n in svc_names])
     query = f"""
+        WITH specialist_cte AS (
+            SELECT UC2.USE_CASE_ID,
+                LISTAGG(DISTINCT f_name.value::STRING || ' (' ||
+                    CASE f_role.value::STRING
+                        WHEN 'SE - Workload FCTO' THEN 'AFE'
+                        WHEN 'Platform Specialist' THEN 'Platform'
+                        WHEN 'SE - Partner' THEN 'Partner SE'
+                        WHEN 'Partner Account Manager' THEN 'Partner'
+                        WHEN 'Partner Solutions Architect' THEN 'Partner SA'
+                        WHEN 'Services Delivery Manager' THEN 'Services'
+                        WHEN 'SE - Enterprise Architect' THEN 'EA'
+                        WHEN 'Industry Principal' THEN 'Industry'
+                        WHEN 'SE - Industry CTO' THEN 'Industry'
+                        WHEN 'SE - Security FCTO' THEN 'Security'
+                        WHEN 'SE - Performance FCTO' THEN 'Performance'
+                    END || ')', ', ') AS SPECIALISTS
+            FROM MDM.MDM_INTERFACES.DIM_USE_CASE UC2,
+            LATERAL FLATTEN(UC2.USE_CASE_TEAM_NAME_LIST) f_name,
+            LATERAL FLATTEN(UC2.USE_CASE_TEAM_ROLE_LIST) f_role
+            WHERE f_name.index = f_role.index
+              AND f_role.value::STRING IN ('SE - Workload FCTO', 'Platform Specialist', 'SE - Partner', 'Partner Account Manager', 'Partner Solutions Architect', 'Services Delivery Manager', 'SE - Enterprise Architect', 'Industry Principal', 'SE - Industry CTO', 'SE - Security FCTO', 'SE - Performance FCTO')
+            GROUP BY UC2.USE_CASE_ID
+        )
         SELECT
             d.USE_CASE_ID, d.USE_CASE_NAME, d.ACCOUNT_NAME, d.USE_CASE_EACV,
             d.USE_CASE_STAGE, d.USE_CASE_STATUS, d.THEATER_NAME, d.REGION_NAME,
@@ -591,6 +689,7 @@ def load_services_use_cases(svc_names):
             IFF(d.IMPLEMENTATION_COMMENTS IS NOT NULL AND TRIM(d.IMPLEMENTATION_COMMENTS) != '', TRUE, FALSE) AS HAS_IMPLEMENTATION_COMMENTS,
             d.IMPLEMENTATION_COMMENTS,
             d.LAST_MODIFIED_DATE, d.DECISION_DATE, d.GO_LIVE_DATE,
+            COALESCE(sp.SPECIALISTS, '') AS SPECIALISTS,
             ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
@@ -598,7 +697,8 @@ def load_services_use_cases(svc_names):
                 IFF(d.IS_PS_ENGAGED = TRUE OR ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Services Delivery%', 'Services', NULL),
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Industry%' OR ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%FCTO - Industry%', 'Industry', NULL)
             )), ', ') AS ENGAGEMENT_DRIVERS
-        FROM MDM.MDM_INTERFACES.DIM_USE_CASE d,
+        FROM MDM.MDM_INTERFACES.DIM_USE_CASE d
+        LEFT JOIN specialist_cte sp ON sp.USE_CASE_ID = d.USE_CASE_ID,
             LATERAL FLATTEN(d.USE_CASE_TEAM_NAME_LIST) f
         WHERE f.value::STRING IN ('{names_str}')
         ORDER BY d.USE_CASE_EACV DESC NULLS LAST
@@ -707,7 +807,7 @@ def apply_driver_filter(df):
 TAB_NAMES = ["Overall DE/DL Summary", "AFE All Engagements", "Weekly Key Updates", "Consumption Credits", "PSS-AFE Team Commentry", "Services Team Commentry", "Test"]
 active_tab = st.radio("", TAB_NAMES, horizontal=True, label_visibility="collapsed", key="active_tab")
 
-display_cols = ['ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'ENGINEER', 'MANAGER', 'KEY_FEATURES', 'ENGAGEMENT_DRIVERS', 'THEATER', 'GVP', 'SFDC']
+display_cols = ['ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'ENGINEER', 'MANAGER', 'KEY_FEATURES', 'ENGAGEMENT_DRIVERS', 'SPECIALISTS', 'THEATER', 'GVP', 'SFDC']
 
 if active_tab == "AFE All Engagements":
     st.subheader("All Engagements")
@@ -736,6 +836,7 @@ if active_tab == "AFE All Engagements":
                 "EACV": st.column_config.NumberColumn("EACV", format="$%.0f"),
                 "KEY_FEATURES": st.column_config.TextColumn("Key Features", width="medium"),
                 "ENGAGEMENT_DRIVERS": st.column_config.TextColumn("Drivers", width="medium"),
+                "SPECIALISTS": st.column_config.TextColumn("Specialists", width="medium"),
                 "SFDC": st.column_config.LinkColumn("SFDC", display_text=r".*/(.+)/view"),
             },
             disabled=[c for c in display_cols],
@@ -797,10 +898,34 @@ if active_tab == "Overall DE/DL Summary":
     with st.spinner('Loading summary...'):
         summary_stage_where = stage_clause if stage_filter else "AND UC.USE_CASE_STAGE NOT LIKE '0 -%' AND UC.USE_CASE_STAGE NOT LIKE '8 -%'"
         summary_query = f"""
+        WITH specialist_cte AS (
+            SELECT UC2.USE_CASE_ID,
+                LISTAGG(DISTINCT f_name.value::STRING || ' (' ||
+                    CASE f_role.value::STRING
+                        WHEN 'SE - Workload FCTO' THEN 'AFE'
+                        WHEN 'Platform Specialist' THEN 'Platform'
+                        WHEN 'SE - Partner' THEN 'Partner SE'
+                        WHEN 'Partner Account Manager' THEN 'Partner'
+                        WHEN 'Partner Solutions Architect' THEN 'Partner SA'
+                        WHEN 'Services Delivery Manager' THEN 'Services'
+                        WHEN 'SE - Enterprise Architect' THEN 'EA'
+                        WHEN 'Industry Principal' THEN 'Industry'
+                        WHEN 'SE - Industry CTO' THEN 'Industry'
+                        WHEN 'SE - Security FCTO' THEN 'Security'
+                        WHEN 'SE - Performance FCTO' THEN 'Performance'
+                    END || ')', ', ') AS SPECIALISTS
+            FROM MDM.MDM_INTERFACES.DIM_USE_CASE UC2,
+            LATERAL FLATTEN(UC2.USE_CASE_TEAM_NAME_LIST) f_name,
+            LATERAL FLATTEN(UC2.USE_CASE_TEAM_ROLE_LIST) f_role
+            WHERE f_name.index = f_role.index
+              AND f_role.value::STRING IN ('SE - Workload FCTO', 'Platform Specialist', 'SE - Partner', 'Partner Account Manager', 'Partner Solutions Architect', 'Services Delivery Manager', 'SE - Enterprise Architect', 'Industry Principal', 'SE - Industry CTO', 'SE - Security FCTO', 'SE - Performance FCTO')
+            GROUP BY UC2.USE_CASE_ID
+        )
         SELECT UC.USE_CASE_ID, UC.USE_CASE_LEAD_SE_NAME AS ENGINEER, UC.ACCOUNT_SE_MANAGER AS MANAGER,
             UC.ACCOUNT_NAME, UC.ACCOUNT_OWNER_NAME AS ACCOUNT_OWNER, UC.ACCOUNT_LEAD_SE_NAME AS ACCOUNT_SE, UC.USE_CASE_NAME,
             UC.USE_CASE_STAGE AS STAGE, UC.USE_CASE_EACV AS EACV, UC.PRIORITIZED_FEATURES AS KEY_FEATURES,
             UC.THEATER_NAME AS THEATER, UC.ACCOUNT_GVP AS GVP, UC.DECISION_DATE, UC.GO_LIVE_DATE, UC.LAST_MODIFIED_DATE,
+            COALESCE(sp.SPECIALISTS, '') AS SPECIALISTS,
             ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
                 IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
                 IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
@@ -812,6 +937,7 @@ if active_tab == "Overall DE/DL Summary":
                  WHEN UC.USE_CASE_STAGE LIKE '4 -%' OR UC.USE_CASE_STAGE LIKE '5 -%' THEN 'Stage 4-5'
                  WHEN UC.USE_CASE_STAGE LIKE '6 -%' OR UC.USE_CASE_STAGE LIKE '7 -%' THEN 'Stage 6-7' ELSE 'Other' END AS STAGE_BUCKET
         FROM MDM.MDM_INTERFACES.DIM_USE_CASE UC
+        LEFT JOIN specialist_cte sp ON sp.USE_CASE_ID = UC.USE_CASE_ID
         WHERE 1=1 {summary_stage_where}
           AND (UC.TECHNICAL_USE_CASE LIKE '%DE:%' OR UC.PRIORITIZED_FEATURES LIKE '%DE -%')
           AND (UC.DECISION_DATE BETWEEN '{start_date}' AND '{end_date}' OR UC.GO_LIVE_DATE BETWEEN '{start_date}' AND '{end_date}')
@@ -852,7 +978,7 @@ if active_tab == "Overall DE/DL Summary":
         st.plotly_chart(fig, use_container_width=True)
         
         st.markdown("### All DE/DL Use Cases")
-        summary_display_cols = ['STAGE_BUCKET', 'ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'KEY_FEATURES', 'ENGAGEMENT_DRIVERS', 'ENGINEER', 'SFDC']
+        summary_display_cols = ['STAGE_BUCKET', 'ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'KEY_FEATURES', 'ENGAGEMENT_DRIVERS', 'SPECIALISTS', 'ENGINEER', 'SFDC']
         df_summary_display = df_summary[summary_display_cols].copy()
         df_summary_display.insert(0, 'Select', False)
         
@@ -904,11 +1030,35 @@ if active_tab == "Weekly Key Updates":
         min_acv_value = min_acv
         weekly_stage_where = stage_clause if stage_filter else "AND UC.USE_CASE_STAGE NOT LIKE '0 -%' AND UC.USE_CASE_STAGE NOT LIKE '8 -%'"
         weekly_query = f"""
+        WITH specialist_cte AS (
+            SELECT UC2.USE_CASE_ID,
+                LISTAGG(DISTINCT f_name.value::STRING || ' (' ||
+                    CASE f_role.value::STRING
+                        WHEN 'SE - Workload FCTO' THEN 'AFE'
+                        WHEN 'Platform Specialist' THEN 'Platform'
+                        WHEN 'SE - Partner' THEN 'Partner SE'
+                        WHEN 'Partner Account Manager' THEN 'Partner'
+                        WHEN 'Partner Solutions Architect' THEN 'Partner SA'
+                        WHEN 'Services Delivery Manager' THEN 'Services'
+                        WHEN 'SE - Enterprise Architect' THEN 'EA'
+                        WHEN 'Industry Principal' THEN 'Industry'
+                        WHEN 'SE - Industry CTO' THEN 'Industry'
+                        WHEN 'SE - Security FCTO' THEN 'Security'
+                        WHEN 'SE - Performance FCTO' THEN 'Performance'
+                    END || ')', ', ') AS SPECIALISTS
+            FROM MDM.MDM_INTERFACES.DIM_USE_CASE UC2,
+            LATERAL FLATTEN(UC2.USE_CASE_TEAM_NAME_LIST) f_name,
+            LATERAL FLATTEN(UC2.USE_CASE_TEAM_ROLE_LIST) f_role
+            WHERE f_name.index = f_role.index
+              AND f_role.value::STRING IN ('SE - Workload FCTO', 'Platform Specialist', 'SE - Partner', 'Partner Account Manager', 'Partner Solutions Architect', 'Services Delivery Manager', 'SE - Enterprise Architect', 'Industry Principal', 'SE - Industry CTO', 'SE - Security FCTO', 'SE - Performance FCTO')
+            GROUP BY UC2.USE_CASE_ID
+        )
         SELECT UC.USE_CASE_ID, UC.ACCOUNT_NAME, UC.ACCOUNT_OWNER_NAME AS ACCOUNT_OWNER, UC.ACCOUNT_LEAD_SE_NAME AS ACCOUNT_SE, UC.USE_CASE_NAME, UC.USE_CASE_STAGE AS STAGE,
             UC.USE_CASE_EACV AS EACV, UC.PRIORITIZED_FEATURES AS KEY_FEATURES, UC.TECHNICAL_USE_CASE, UC.USE_CASE_LEAD_SE_NAME AS ENGINEER,
             UC.THEATER_NAME AS THEATER, UC.ACCOUNT_GVP AS GVP, UC.SE_COMMENTS, UC.IMPLEMENTATION_COMMENTS,
             UC.NEXT_STEPS, UC.SPECIALIST_COMMENTS, UC.PARTNER_COMMENTS, UC.DECISION_DATE, UC.GO_LIVE_DATE,
             UC.LAST_MODIFIED_DATE,
+            COALESCE(sp.SPECIALISTS, '') AS SPECIALISTS,
             ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
                 IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
                 IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
@@ -920,6 +1070,7 @@ if active_tab == "Weekly Key Updates":
                  WHEN UC.USE_CASE_STAGE LIKE '4 -%' OR UC.USE_CASE_STAGE LIKE '5 -%' THEN 'Stage 4-5'
                  WHEN UC.USE_CASE_STAGE LIKE '6 -%' OR UC.USE_CASE_STAGE LIKE '7 -%' THEN 'Stage 6-7' ELSE 'Other' END AS STAGE_BUCKET
         FROM MDM.MDM_INTERFACES.DIM_USE_CASE UC
+        LEFT JOIN specialist_cte sp ON sp.USE_CASE_ID = UC.USE_CASE_ID
         WHERE 1=1 {weekly_stage_where}
           AND UC.PRIORITIZED_FEATURES ILIKE '%DE -%'
           AND (UC.DECISION_DATE BETWEEN '{start_date}' AND '{end_date}' OR UC.GO_LIVE_DATE BETWEEN '{start_date}' AND '{end_date}')
@@ -1499,10 +1650,10 @@ if active_tab == "PSS-AFE Team Commentry":
     detail["Engagement"] = detail.apply(uc_engagement, axis=1)
     detail = detail.reset_index(drop=True)
 
-    detail_display = detail[["SPECIALIST", "ENGINEER", "ACCOUNT_NAME", "USE_CASE_NAME", "USE_CASE_STAGE", "USE_CASE_STATUS", "USE_CASE_EACV", "ENGAGEMENT_DRIVERS", "THEATER_NAME", "PRODUCT_CATEGORIES", "Engagement", "DECISION_DATE", "GO_LIVE_DATE", "LAST_MODIFIED_DATE", "SFDC"]].rename(columns={
+    detail_display = detail[["SPECIALIST", "ENGINEER", "ACCOUNT_NAME", "USE_CASE_NAME", "USE_CASE_STAGE", "USE_CASE_STATUS", "USE_CASE_EACV", "ENGAGEMENT_DRIVERS", "SPECIALISTS", "THEATER_NAME", "PRODUCT_CATEGORIES", "Engagement", "DECISION_DATE", "GO_LIVE_DATE", "LAST_MODIFIED_DATE", "SFDC"]].rename(columns={
         "SPECIALIST": "AFE", "ACCOUNT_NAME": "Account", "USE_CASE_NAME": "Use Case",
         "USE_CASE_STAGE": "Stage", "USE_CASE_STATUS": "Status", "USE_CASE_EACV": "EACV",
-        "ENGAGEMENT_DRIVERS": "Drivers", "THEATER_NAME": "Theater", "PRODUCT_CATEGORIES": "Products",
+        "ENGAGEMENT_DRIVERS": "Drivers", "SPECIALISTS": "Specialists", "THEATER_NAME": "Theater", "PRODUCT_CATEGORIES": "Products",
         "LAST_MODIFIED_DATE": "Last Modified", "DECISION_DATE": "Decision Date", "GO_LIVE_DATE": "Go Live Date",
     })
 
@@ -1918,10 +2069,10 @@ if active_tab == "Services Team Commentry":
         svc_detail["Engagement"] = svc_detail.apply(svc_uc_engagement, axis=1)
         svc_detail = svc_detail.reset_index(drop=True)
 
-        svc_detail_display = svc_detail[["SPECIALIST", "ENGINEER", "ACCOUNT_NAME", "USE_CASE_NAME", "USE_CASE_STAGE", "USE_CASE_STATUS", "USE_CASE_EACV", "ENGAGEMENT_DRIVERS", "THEATER_NAME", "PRODUCT_CATEGORIES", "Engagement", "DECISION_DATE", "GO_LIVE_DATE", "LAST_MODIFIED_DATE", "SFDC"]].rename(columns={
+        svc_detail_display = svc_detail[["SPECIALIST", "ENGINEER", "ACCOUNT_NAME", "USE_CASE_NAME", "USE_CASE_STAGE", "USE_CASE_STATUS", "USE_CASE_EACV", "ENGAGEMENT_DRIVERS", "SPECIALISTS", "THEATER_NAME", "PRODUCT_CATEGORIES", "Engagement", "DECISION_DATE", "GO_LIVE_DATE", "LAST_MODIFIED_DATE", "SFDC"]].rename(columns={
             "SPECIALIST": "SDM", "ACCOUNT_NAME": "Account", "USE_CASE_NAME": "Use Case",
             "USE_CASE_STAGE": "Stage", "USE_CASE_STATUS": "Status", "USE_CASE_EACV": "EACV",
-            "ENGAGEMENT_DRIVERS": "Drivers", "THEATER_NAME": "Theater", "PRODUCT_CATEGORIES": "Products",
+            "ENGAGEMENT_DRIVERS": "Drivers", "SPECIALISTS": "Specialists", "THEATER_NAME": "Theater", "PRODUCT_CATEGORIES": "Products",
             "LAST_MODIFIED_DATE": "Last Modified", "DECISION_DATE": "Decision Date", "GO_LIVE_DATE": "Go Live Date",
         })
 
