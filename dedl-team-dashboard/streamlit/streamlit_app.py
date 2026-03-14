@@ -379,7 +379,7 @@ def build_afe_query(start_date, end_date, emp_filter, feature_filter, key_feat_f
     LEFT JOIN specialist_cte sp ON sp.USE_CASE_ID = UC.USE_CASE_ID
     WHERE 1=1 {afe_stage_clause}
       AND (UC.DECISION_DATE BETWEEN '{start_date}' AND '{end_date}' OR UC.GO_LIVE_DATE BETWEEN '{start_date}' AND '{end_date}')
-      {feature_filter} {key_feat_filter} {gvp_clause} {theater_clause} {modified_clause} {account_name_clause}
+      {feature_filter} {key_feat_filter} {gvp_clause} {theater_clause} {account_name_clause}
     GROUP BY UC.USE_CASE_ID, UC.ACCOUNT_NAME, UC.ACCOUNT_OWNER_NAME, UC.ACCOUNT_LEAD_SE_NAME, UC.USE_CASE_NAME, UC.USE_CASE_STAGE, UC.USE_CASE_EACV,
              UC.TECHNICAL_USE_CASE, UC.PRIORITIZED_FEATURES, UC.THEATER_NAME, UC.ACCOUNT_GVP, UC.DECISION_DATE, UC.GO_LIVE_DATE, UC.SE_COMMENTS, UC.NEXT_STEPS, UC.LAST_MODIFIED_DATE,
              UC.USE_CASE_TEAM_ROLE_LIST, UC.IS_PARTNER_ATTACHED, UC.IS_PS_ENGAGED, sp.SPECIALISTS
@@ -545,6 +545,13 @@ def load_afe_use_cases():
             WHERE f_name.index = f_role.index
               AND f_role.value::STRING IN ('SE - Workload FCTO', 'Platform Specialist', 'SE - Partner', 'Partner Account Manager', 'Partner Solutions Architect', 'Services Delivery Manager', 'SE - Enterprise Architect', 'Industry Principal', 'SE - Industry CTO', 'SE - Security FCTO', 'SE - Performance FCTO')
             GROUP BY UC2.USE_CASE_ID
+        ),
+        comment_history_cte AS (
+            SELECT PARENT_ID AS USE_CASE_ID, MAX(CREATED_DATE) AS LAST_SPECIALIST_COMMENT_DATE
+            FROM FIVETRAN.SALESFORCE.VH_DELIVERABLE_HISTORY
+            WHERE FIELD = 'Specialist_Comments__c'
+              AND IS_DELETED = FALSE
+            GROUP BY PARENT_ID
         )
         SELECT
             d.USE_CASE_ID, d.USE_CASE_NAME, d.ACCOUNT_NAME, d.USE_CASE_EACV,
@@ -557,6 +564,7 @@ def load_afe_use_cases():
             d.SPECIALIST_COMMENTS,
             d.LAST_MODIFIED_DATE, d.DECISION_DATE, d.GO_LIVE_DATE,
             COALESCE(sp.SPECIALISTS, '') AS SPECIALISTS,
+            ch.LAST_SPECIALIST_COMMENT_DATE,
             ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
@@ -565,7 +573,8 @@ def load_afe_use_cases():
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Industry%' OR ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%FCTO - Industry%', 'Industry', NULL)
             )), ', ') AS ENGAGEMENT_DRIVERS
         FROM MDM.MDM_INTERFACES.DIM_USE_CASE d
-        LEFT JOIN specialist_cte sp ON sp.USE_CASE_ID = d.USE_CASE_ID,
+        LEFT JOIN specialist_cte sp ON sp.USE_CASE_ID = d.USE_CASE_ID
+        LEFT JOIN comment_history_cte ch ON ch.USE_CASE_ID = d.USE_CASE_ID,
             LATERAL FLATTEN(d.USE_CASE_TEAM_NAME_LIST) f,
             LATERAL FLATTEN(d.USE_CASE_TEAM_ROLE_LIST) r
         WHERE f.index = r.index
@@ -611,6 +620,13 @@ def load_pss_use_cases(pss_names):
             WHERE f_name.index = f_role.index
               AND f_role.value::STRING IN ('SE - Workload FCTO', 'Platform Specialist', 'SE - Partner', 'Partner Account Manager', 'Partner Solutions Architect', 'Services Delivery Manager', 'SE - Enterprise Architect', 'Industry Principal', 'SE - Industry CTO', 'SE - Security FCTO', 'SE - Performance FCTO')
             GROUP BY UC2.USE_CASE_ID
+        ),
+        comment_history_cte AS (
+            SELECT PARENT_ID AS USE_CASE_ID, MAX(CREATED_DATE) AS LAST_SPECIALIST_COMMENT_DATE
+            FROM FIVETRAN.SALESFORCE.VH_DELIVERABLE_HISTORY
+            WHERE FIELD = 'Specialist_Comments__c'
+              AND IS_DELETED = FALSE
+            GROUP BY PARENT_ID
         )
         SELECT
             d.USE_CASE_ID, d.USE_CASE_NAME, d.ACCOUNT_NAME, d.USE_CASE_EACV,
@@ -623,6 +639,7 @@ def load_pss_use_cases(pss_names):
             d.SPECIALIST_COMMENTS,
             d.LAST_MODIFIED_DATE, d.DECISION_DATE, d.GO_LIVE_DATE,
             COALESCE(sp.SPECIALISTS, '') AS SPECIALISTS,
+            ch.LAST_SPECIALIST_COMMENT_DATE,
             ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
@@ -631,7 +648,8 @@ def load_pss_use_cases(pss_names):
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Industry%' OR ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%FCTO - Industry%', 'Industry', NULL)
             )), ', ') AS ENGAGEMENT_DRIVERS
         FROM MDM.MDM_INTERFACES.DIM_USE_CASE d
-        LEFT JOIN specialist_cte sp ON sp.USE_CASE_ID = d.USE_CASE_ID,
+        LEFT JOIN specialist_cte sp ON sp.USE_CASE_ID = d.USE_CASE_ID
+        LEFT JOIN comment_history_cte ch ON ch.USE_CASE_ID = d.USE_CASE_ID,
             LATERAL FLATTEN(d.USE_CASE_TEAM_NAME_LIST) f
         WHERE f.value::STRING IN ('{names_str}')
         ORDER BY d.USE_CASE_EACV DESC NULLS LAST
@@ -678,6 +696,13 @@ def load_services_use_cases(svc_names):
             WHERE f_name.index = f_role.index
               AND f_role.value::STRING IN ('SE - Workload FCTO', 'Platform Specialist', 'SE - Partner', 'Partner Account Manager', 'Partner Solutions Architect', 'Services Delivery Manager', 'SE - Enterprise Architect', 'Industry Principal', 'SE - Industry CTO', 'SE - Security FCTO', 'SE - Performance FCTO')
             GROUP BY UC2.USE_CASE_ID
+        ),
+        comment_history_cte AS (
+            SELECT PARENT_ID AS USE_CASE_ID, MAX(CREATED_DATE) AS LAST_IMPLEMENTATION_COMMENT_DATE
+            FROM FIVETRAN.SALESFORCE.VH_DELIVERABLE_HISTORY
+            WHERE FIELD = 'Implementation_Comments__c'
+              AND IS_DELETED = FALSE
+            GROUP BY PARENT_ID
         )
         SELECT
             d.USE_CASE_ID, d.USE_CASE_NAME, d.ACCOUNT_NAME, d.USE_CASE_EACV,
@@ -690,6 +715,7 @@ def load_services_use_cases(svc_names):
             d.IMPLEMENTATION_COMMENTS,
             d.LAST_MODIFIED_DATE, d.DECISION_DATE, d.GO_LIVE_DATE,
             COALESCE(sp.SPECIALISTS, '') AS SPECIALISTS,
+            ch.LAST_IMPLEMENTATION_COMMENT_DATE,
             ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
@@ -698,7 +724,8 @@ def load_services_use_cases(svc_names):
                 IFF(ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Industry%' OR ARRAY_TO_STRING(d.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%FCTO - Industry%', 'Industry', NULL)
             )), ', ') AS ENGAGEMENT_DRIVERS
         FROM MDM.MDM_INTERFACES.DIM_USE_CASE d
-        LEFT JOIN specialist_cte sp ON sp.USE_CASE_ID = d.USE_CASE_ID,
+        LEFT JOIN specialist_cte sp ON sp.USE_CASE_ID = d.USE_CASE_ID
+        LEFT JOIN comment_history_cte ch ON ch.USE_CASE_ID = d.USE_CASE_ID,
             LATERAL FLATTEN(d.USE_CASE_TEAM_NAME_LIST) f
         WHERE f.value::STRING IN ('{names_str}')
         ORDER BY d.USE_CASE_EACV DESC NULLS LAST
@@ -773,7 +800,6 @@ stage_options = ["1 - Discovery", "2 - Scoping", "3 - Technical / Business Valid
 stage_filter = st.sidebar.multiselect("Use Case Stage", stage_options)
 account_name_search = st.sidebar.text_input("Account Name", value="", key="account_name_filter", help="Filter by account name (case-insensitive). Leave blank for all.")
 min_acv = st.sidebar.number_input("Min EACV ($)", min_value=0, value=1, step=1, key="min_acv_filter")
-last_n_days = st.sidebar.text_input("Last N Days Modified", value="", key="last_n_days_filter", help="Filter use cases modified in last N days. Leave blank for all.")
 
 
 emp_filter = ""
@@ -794,7 +820,6 @@ gvp_clause = f"AND UC.ACCOUNT_GVP IN ('" + "', '".join(gvp_filter) + "')" if gvp
 theater_clause = f"AND UC.THEATER_NAME IN ('" + "', '".join(theater_filter) + "')" if theater_filter else ""
 stage_clause = f"AND UC.USE_CASE_STAGE IN ('" + "', '".join(stage_filter) + "')" if stage_filter else ""
 account_name_clause = f"AND UC.ACCOUNT_NAME ILIKE '%{account_name_search.strip().replace(chr(39), chr(39)+chr(39))}%'" if account_name_search.strip() else ""
-modified_clause = f"AND UC.LAST_MODIFIED_DATE >= DATEADD('day', -{int(last_n_days)}, CURRENT_DATE())" if last_n_days.strip() else ""
 
 def apply_driver_filter(df):
     if not driver_filter or df.empty or 'ENGAGEMENT_DRIVERS' not in df.columns:
@@ -804,7 +829,7 @@ def apply_driver_filter(df):
         mask = mask | df['ENGAGEMENT_DRIVERS'].fillna('').str.contains(d, case=False, na=False)
     return df[mask].reset_index(drop=True)
 
-TAB_NAMES = ["Overall DE/DL Summary", "AFE All Engagements", "Weekly Key Updates", "Consumption Credits", "PSS-AFE Team Commentry", "Services Team Commentry", "Test"]
+TAB_NAMES = ["Overall DE/DL Summary", "AFE All Engagements", "Weekly Key Updates", "Consumption Credits", "PSS-AFE Team Commentry", "Services Team Commentry"]
 active_tab = st.radio("", TAB_NAMES, horizontal=True, label_visibility="collapsed", key="active_tab")
 
 display_cols = ['ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'ENGINEER', 'MANAGER', 'KEY_FEATURES', 'ENGAGEMENT_DRIVERS', 'SPECIALISTS', 'THEATER', 'GVP', 'SFDC']
@@ -941,7 +966,7 @@ if active_tab == "Overall DE/DL Summary":
         WHERE 1=1 {summary_stage_where}
           AND (UC.TECHNICAL_USE_CASE LIKE '%DE:%' OR UC.PRIORITIZED_FEATURES LIKE '%DE -%')
           AND (UC.DECISION_DATE BETWEEN '{start_date}' AND '{end_date}' OR UC.GO_LIVE_DATE BETWEEN '{start_date}' AND '{end_date}')
-          {feature_filter} {key_feat_filter} {gvp_clause} {theater_clause} {modified_clause} {account_name_clause}
+          {feature_filter} {key_feat_filter} {gvp_clause} {theater_clause} {account_name_clause}
         ORDER BY EACV DESC NULLS LAST
         """
         df_summary = apply_driver_filter(run_query(summary_query))
@@ -1026,6 +1051,15 @@ if active_tab == "Overall DE/DL Summary":
 if active_tab == "Weekly Key Updates":
     st.subheader("Weekly Key Updates")
     st.caption("Use cases grouped by Key Feature, broken down by stage bucket (1-3, 4-5, 6-7)")
+
+    filter_col1, filter_col2 = st.columns(2)
+    with filter_col1:
+        last_n_history_days = st.number_input("Last N Days Modified (based on SFDC history)", min_value=1, value=10, step=1, key="weekly_last_n_history_days", help="Filter use cases with any SFDC field change in last N days.")
+    with filter_col2:
+        comment_type_options = {"All Fields": "", "Specialist Comments": "Specialist_Comments__c", "SE Comments": "Use_Case_Comments__c", "Partner Comments": "Partners__c", "Professional Services": "Implementation_Comments__c"}
+        selected_comment_type = st.selectbox("Show modified date based on", list(comment_type_options.keys()), index=0, key="weekly_comment_type_filter", help="Filter the modification date to only track changes to a specific comment field.")
+    history_field_clause = f"AND FIELD = '{comment_type_options[selected_comment_type]}'" if comment_type_options[selected_comment_type] else ""
+
     with st.spinner('Loading...'):
         min_acv_value = min_acv
         weekly_stage_where = stage_clause if stage_filter else "AND UC.USE_CASE_STAGE NOT LIKE '0 -%' AND UC.USE_CASE_STAGE NOT LIKE '8 -%'"
@@ -1052,6 +1086,13 @@ if active_tab == "Weekly Key Updates":
             WHERE f_name.index = f_role.index
               AND f_role.value::STRING IN ('SE - Workload FCTO', 'Platform Specialist', 'SE - Partner', 'Partner Account Manager', 'Partner Solutions Architect', 'Services Delivery Manager', 'SE - Enterprise Architect', 'Industry Principal', 'SE - Industry CTO', 'SE - Security FCTO', 'SE - Performance FCTO')
             GROUP BY UC2.USE_CASE_ID
+        ),
+        history_cte AS (
+            SELECT PARENT_ID AS USE_CASE_ID, MAX(CREATED_DATE) AS LAST_HISTORY_UPDATE_DATE
+            FROM FIVETRAN.SALESFORCE.VH_DELIVERABLE_HISTORY
+            WHERE IS_DELETED = FALSE
+              {history_field_clause}
+            GROUP BY PARENT_ID
         )
         SELECT UC.USE_CASE_ID, UC.ACCOUNT_NAME, UC.ACCOUNT_OWNER_NAME AS ACCOUNT_OWNER, UC.ACCOUNT_LEAD_SE_NAME AS ACCOUNT_SE, UC.USE_CASE_NAME, UC.USE_CASE_STAGE AS STAGE,
             UC.USE_CASE_EACV AS EACV, UC.PRIORITIZED_FEATURES AS KEY_FEATURES, UC.TECHNICAL_USE_CASE, UC.USE_CASE_LEAD_SE_NAME AS ENGINEER,
@@ -1059,6 +1100,7 @@ if active_tab == "Weekly Key Updates":
             UC.NEXT_STEPS, UC.SPECIALIST_COMMENTS, UC.PARTNER_COMMENTS, UC.DECISION_DATE, UC.GO_LIVE_DATE,
             UC.LAST_MODIFIED_DATE,
             COALESCE(sp.SPECIALISTS, '') AS SPECIALISTS,
+            hc.LAST_HISTORY_UPDATE_DATE,
             ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
                 IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
                 IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
@@ -1071,15 +1113,20 @@ if active_tab == "Weekly Key Updates":
                  WHEN UC.USE_CASE_STAGE LIKE '6 -%' OR UC.USE_CASE_STAGE LIKE '7 -%' THEN 'Stage 6-7' ELSE 'Other' END AS STAGE_BUCKET
         FROM MDM.MDM_INTERFACES.DIM_USE_CASE UC
         LEFT JOIN specialist_cte sp ON sp.USE_CASE_ID = UC.USE_CASE_ID
+        LEFT JOIN history_cte hc ON hc.USE_CASE_ID = UC.USE_CASE_ID
         WHERE 1=1 {weekly_stage_where}
           AND UC.PRIORITIZED_FEATURES ILIKE '%DE -%'
           AND (UC.DECISION_DATE BETWEEN '{start_date}' AND '{end_date}' OR UC.GO_LIVE_DATE BETWEEN '{start_date}' AND '{end_date}')
           AND UC.USE_CASE_EACV >= {min_acv_value}
-          {gvp_clause} {theater_clause} {key_feat_filter} {modified_clause} {account_name_clause}
+          {gvp_clause} {theater_clause} {key_feat_filter} {account_name_clause}
         ORDER BY UC.USE_CASE_EACV DESC NULLS LAST
         """
         df_weekly = apply_driver_filter(run_query(weekly_query))
     
+    if not df_weekly.empty:
+        df_weekly["LAST_HISTORY_UPDATE_DATE"] = pd.to_datetime(df_weekly["LAST_HISTORY_UPDATE_DATE"], errors="coerce")
+        cutoff_date = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=last_n_history_days)
+        df_weekly = df_weekly[df_weekly["LAST_HISTORY_UPDATE_DATE"].notna() & (df_weekly["LAST_HISTORY_UPDATE_DATE"] >= cutoff_date)].reset_index(drop=True)
     if not df_weekly.empty:
         all_key_features = ["DE - Openflow", "DE - Openflow Oracle", "DE - Iceberg", "DE - Snowpark DE", "DE - Snowpark Connect", "DE - Dynamic Tables", "DE - Snowpipe Streaming", "DE - Snowpipe", "DE - Serverless Task", "DE - Connectors", "DE - dbt Projects", "DE - SAP Integration", "DE - Basic"]
         key_features_list = [kf for kf in all_key_features if kf in key_features] if key_features else all_key_features
@@ -1424,6 +1471,7 @@ if active_tab == "PSS-AFE Team Commentry":
         expanded = expanded[kf_mask].reset_index(drop=True)
 
     expanded["LAST_MODIFIED_DATE_DT"] = pd.to_datetime(expanded["LAST_MODIFIED_DATE"], errors="coerce")
+    expanded["LAST_SPECIALIST_COMMENT_DATE_DT"] = pd.to_datetime(expanded["LAST_SPECIALIST_COMMENT_DATE"], errors="coerce")
     expanded["DECISION_DATE_DT"] = pd.to_datetime(expanded["DECISION_DATE"], errors="coerce").dt.date
     expanded["GO_LIVE_DATE_DT"] = pd.to_datetime(expanded["GO_LIVE_DATE"], errors="coerce").dt.date
     expanded["HAS_SPECIALIST_COMMENTS"] = expanded["HAS_SPECIALIST_COMMENTS"].astype(bool)
@@ -1439,13 +1487,13 @@ if active_tab == "PSS-AFE Team Commentry":
     expanded = expanded[expanded["IN_CQ"] | expanded["IN_NQ"]].reset_index(drop=True)
     expanded["RECENTLY_UPDATED_7D"] = (
         expanded["HAS_SPECIALIST_COMMENTS"]
-        & expanded["LAST_MODIFIED_DATE_DT"].notna()
-        & (expanded["LAST_MODIFIED_DATE_DT"].dt.date >= cutoff_7d)
+        & expanded["LAST_SPECIALIST_COMMENT_DATE_DT"].notna()
+        & (expanded["LAST_SPECIALIST_COMMENT_DATE_DT"].dt.date >= cutoff_7d)
     )
     expanded["RECENTLY_UPDATED_14D"] = (
         expanded["HAS_SPECIALIST_COMMENTS"]
-        & expanded["LAST_MODIFIED_DATE_DT"].notna()
-        & (expanded["LAST_MODIFIED_DATE_DT"].dt.date >= cutoff_14d)
+        & expanded["LAST_SPECIALIST_COMMENT_DATE_DT"].notna()
+        & (expanded["LAST_SPECIALIST_COMMENT_DATE_DT"].dt.date >= cutoff_14d)
     )
 
     all_key_features_pss = sorted(set(
@@ -1849,6 +1897,7 @@ if active_tab == "Services Team Commentry":
         svc_expanded = svc_expanded[~svc_expanded["USE_CASE_STAGE"].isin(["8 - Use Case Lost"])].reset_index(drop=True)
 
         svc_expanded["LAST_MODIFIED_DATE_DT"] = pd.to_datetime(svc_expanded["LAST_MODIFIED_DATE"], errors="coerce")
+        svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE_DT"] = pd.to_datetime(svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE"], errors="coerce")
         svc_expanded["DECISION_DATE_DT"] = pd.to_datetime(svc_expanded["DECISION_DATE"], errors="coerce").dt.date
         svc_expanded["GO_LIVE_DATE_DT"] = pd.to_datetime(svc_expanded["GO_LIVE_DATE"], errors="coerce").dt.date
         svc_expanded["HAS_IMPLEMENTATION_COMMENTS"] = svc_expanded["HAS_IMPLEMENTATION_COMMENTS"].astype(bool)
@@ -1863,13 +1912,13 @@ if active_tab == "Services Team Commentry":
         )
         svc_expanded["RECENTLY_UPDATED_7D"] = (
             svc_expanded["HAS_IMPLEMENTATION_COMMENTS"]
-            & svc_expanded["LAST_MODIFIED_DATE_DT"].notna()
-            & (svc_expanded["LAST_MODIFIED_DATE_DT"].dt.date >= svc_cutoff_7d)
+            & svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE_DT"].notna()
+            & (svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE_DT"].dt.date >= svc_cutoff_7d)
         )
         svc_expanded["RECENTLY_UPDATED_14D"] = (
             svc_expanded["HAS_IMPLEMENTATION_COMMENTS"]
-            & svc_expanded["LAST_MODIFIED_DATE_DT"].notna()
-            & (svc_expanded["LAST_MODIFIED_DATE_DT"].dt.date >= svc_cutoff_14d)
+            & svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE_DT"].notna()
+            & (svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE_DT"].dt.date >= svc_cutoff_14d)
         )
 
     if not svc_expanded.empty:
@@ -2230,137 +2279,6 @@ if active_tab == "Services Team Commentry":
                 st.markdown(f"**Cortex:** {escape_latex(msg['content'])}")
     else:
         st.info("No Services engagement data found for the current filters.")
-
-if active_tab == "Test":
-    st.subheader("Specialist Comment History")
-    st.caption("Track when specialist comments were added or updated on use cases, and by whom")
-
-    @st.cache_data(ttl=600, show_spinner=False)
-    def load_comment_history(eng_names, days_back):
-        names_sql = "', '".join(eng_names)
-        q = f"""
-        WITH team_uc AS (
-            SELECT DISTINCT USE_CASE_ID
-            FROM SALES.SE_REPORTING.DIM_USE_CASE_HISTORY_DS,
-            LATERAL FLATTEN(input => USE_CASE_TEAM_NAME_LIST) n
-            WHERE DS = CURRENT_DATE()
-              AND n.value::STRING IN ('{names_sql}')
-        ),
-        snaps AS (
-            SELECT
-                h.DS,
-                h.USE_CASE_ID,
-                h.USE_CASE_NAME,
-                h.ACCOUNT_NAME,
-                h.SPECIALIST_COMMENTS,
-                h.LAST_MODIFIED_DATE,
-                h.USE_CASE_STAGE,
-                h.USE_CASE_EACV,
-                LAG(h.SPECIALIST_COMMENTS) OVER (PARTITION BY h.USE_CASE_ID ORDER BY h.DS) AS PREV_COMMENTS
-            FROM SALES.SE_REPORTING.DIM_USE_CASE_HISTORY_DS h
-            WHERE h.DS >= DATEADD('day', -{days_back}, CURRENT_DATE())
-              AND h.USE_CASE_ID IN (SELECT USE_CASE_ID FROM team_uc)
-        )
-        SELECT
-            DS AS CHANGE_DATE,
-            USE_CASE_ID,
-            USE_CASE_NAME,
-            ACCOUNT_NAME,
-            SPECIALIST_COMMENTS,
-            LAST_MODIFIED_DATE,
-            USE_CASE_STAGE,
-            USE_CASE_EACV,
-            COALESCE(
-                REGEXP_SUBSTR(SPECIALIST_COMMENTS, '^[0-9]{{4}}[/\\\\-][0-9]{{2}}[/\\\\-][0-9]{{2}}\\\\s*[\\\\-]\\\\s*DE\\\\s*[\\\\-]\\\\s*([A-Z][a-z]+ [A-Z][a-z]+)', 1, 1, 'e'),
-                REGEXP_SUBSTR(SPECIALIST_COMMENTS, '^[0-9]{{4}}[/\\\\-][0-9]{{2}}[/\\\\-][0-9]{{2}}\\\\s*[\\\\-]\\\\s*([A-Z][a-z]+ [A-Z][a-z]+)', 1, 1, 'e'),
-                REGEXP_SUBSTR(SPECIALIST_COMMENTS, '^\\\\[?[0-9]{{1,2}}/[0-9]{{1,2}}/?[0-9]{{0,4}}\\\\]?[:\\\\s]*[\\\\-]?\\\\s*([A-Z][a-z]+ [A-Z][a-z]+)', 1, 1, 'e'),
-                REGEXP_SUBSTR(SPECIALIST_COMMENTS, '^([A-Z][a-z]+ [A-Z][a-z]+)\\\\s*[\\\\-]\\\\s*[0-9]{{1,2}}/[0-9]{{1,2}}', 1, 1, 'e'),
-                'Unknown'
-            ) AS UPDATED_BY
-        FROM snaps
-        WHERE (PREV_COMMENTS IS NULL AND SPECIALIST_COMMENTS IS NOT NULL AND TRIM(SPECIALIST_COMMENTS) != '')
-           OR (SPECIALIST_COMMENTS IS NOT NULL AND SPECIALIST_COMMENTS != COALESCE(PREV_COMMENTS, ''))
-        ORDER BY DS DESC
-        """
-        return run_query(q)
-
-    test_days_back = st.slider("Days of history", min_value=7, max_value=180, value=30, step=7, key="test_days_back")
-
-    with st.spinner("Loading specialist comment history..."):
-        hist_engineers = all_engineers
-        if engineer_filter:
-            hist_engineers = engineer_filter
-        elif manager_filter:
-            hist_engineers = []
-            for mgr in manager_filter:
-                hist_engineers.extend(ENGINEER_LIST.get(mgr, []))
-        hist_df = load_comment_history(hist_engineers, test_days_back)
-
-    if hist_df is not None and not hist_df.empty:
-        hist_df['CHANGE_DATE'] = pd.to_datetime(hist_df['CHANGE_DATE'])
-        hist_df['EACV'] = pd.to_numeric(hist_df['USE_CASE_EACV'], errors='coerce').fillna(0)
-        hist_df['COMMENT_PREVIEW'] = hist_df['SPECIALIST_COMMENTS'].fillna('').str[:200] + '...'
-        hist_df['SFDC'] = hist_df['USE_CASE_ID'].apply(lambda x: f"https://snowflakecomputing.lightning.force.com/lightning/r/Use_Case__c/{x}/view")
-
-        hc1, hc2, hc3, hc4 = st.columns(4)
-        with hc1:
-            st.markdown(f'<div class="metric-card metric-neutral"><div class="label">Total Updates</div><div class="value">{len(hist_df)}</div></div>', unsafe_allow_html=True)
-        with hc2:
-            unique_uc = hist_df['USE_CASE_ID'].nunique()
-            st.markdown(f'<div class="metric-card metric-green"><div class="label">Use Cases Updated</div><div class="value">{unique_uc}</div></div>', unsafe_allow_html=True)
-        with hc3:
-            unique_updaters = hist_df[hist_df['UPDATED_BY'] != 'Unknown']['UPDATED_BY'].nunique()
-            st.markdown(f'<div class="metric-card metric-amber"><div class="label">Unique Updaters</div><div class="value">{unique_updaters}</div></div>', unsafe_allow_html=True)
-        with hc4:
-            total_eacv = hist_df.drop_duplicates(subset='USE_CASE_ID')['EACV'].sum()
-            st.markdown(f'<div class="metric-card metric-neutral"><div class="label">Pipeline Touched</div><div class="value">${total_eacv:,.0f}</div></div>', unsafe_allow_html=True)
-
-        st.markdown("")
-
-        updates_by_date = hist_df.groupby(hist_df['CHANGE_DATE'].dt.date).size().reset_index(name='UPDATES')
-        updates_by_date.columns = ['Date', 'Updates']
-        fig_timeline = px.bar(updates_by_date, x='Date', y='Updates', title='Comment Updates Over Time')
-        fig_timeline.update_layout(height=300, margin=dict(l=20, r=20, t=40, b=20))
-        st.plotly_chart(fig_timeline, use_container_width=True)
-
-        updater_counts = hist_df[hist_df['UPDATED_BY'] != 'Unknown'].groupby('UPDATED_BY').size().reset_index(name='UPDATES').sort_values('UPDATES', ascending=False)
-        if not updater_counts.empty:
-            fig_updaters = px.bar(updater_counts.head(20), x='UPDATED_BY', y='UPDATES', title='Top Updaters')
-            fig_updaters.update_layout(height=300, margin=dict(l=20, r=20, t=40, b=20), xaxis_title='', xaxis_tickangle=-45)
-            st.plotly_chart(fig_updaters, use_container_width=True)
-
-        st.markdown("### Change Log")
-        test_fc1, test_fc2 = st.columns(2)
-        with test_fc1:
-            updater_options = ["All"] + sorted(hist_df[hist_df['UPDATED_BY'] != 'Unknown']['UPDATED_BY'].unique().tolist())
-            test_updater_filter = st.selectbox("Filter by Updater", updater_options, key="test_updater_filter")
-        with test_fc2:
-            test_account_search = st.text_input("Search Account", key="test_account_search")
-
-        display_hist = hist_df.copy()
-        if test_updater_filter != "All":
-            display_hist = display_hist[display_hist['UPDATED_BY'] == test_updater_filter]
-        if test_account_search.strip():
-            display_hist = display_hist[display_hist['ACCOUNT_NAME'].str.contains(test_account_search.strip(), case=False, na=False)]
-
-        show_cols = ['CHANGE_DATE', 'UPDATED_BY', 'ACCOUNT_NAME', 'USE_CASE_NAME', 'USE_CASE_STAGE', 'EACV', 'COMMENT_PREVIEW', 'SFDC']
-        show_cols = [c for c in show_cols if c in display_hist.columns]
-        st.dataframe(
-            display_hist[show_cols].rename(columns={
-                'CHANGE_DATE': 'Date', 'UPDATED_BY': 'Updated By', 'ACCOUNT_NAME': 'Account',
-                'USE_CASE_NAME': 'Use Case', 'USE_CASE_STAGE': 'Stage', 'EACV': 'EACV',
-                'COMMENT_PREVIEW': 'Comment Preview', 'SFDC': 'SFDC Link'
-            }),
-            column_config={
-                'SFDC Link': st.column_config.LinkColumn("SFDC", display_text="Open"),
-                'EACV': st.column_config.NumberColumn("EACV", format="$%.0f"),
-                'Date': st.column_config.DateColumn("Date"),
-            },
-            hide_index=True, use_container_width=True, height=600
-        )
-        st.caption(f"Showing {len(display_hist)} comment changes over last {test_days_back} days")
-    else:
-        st.info("No specialist comment changes found for the selected filters and time range.")
 
 st.markdown("---")
 st.markdown("## 💬 Ask Cortex")
