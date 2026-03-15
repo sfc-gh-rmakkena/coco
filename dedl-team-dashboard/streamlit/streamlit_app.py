@@ -1158,7 +1158,7 @@ if active_tab == "Weekly Key Updates":
                     feat_all = st.checkbox(f"✅ Select All {key_feat}", key=feat_select_key)
                 with top_col2:
                     if st.button(f"🤖 AI Summary", key=ai_btn_key):
-                        st.session_state[f'weekly_ai_{key_feat}'] = True
+                        st.session_state[f'weekly_ai_flag_{key_feat}'] = True
                 active_buckets = [sb for sb in stage_buckets if not df_feat_all[df_feat_all['STAGE_BUCKET'] == sb].empty]
                 if active_buckets:
                     stage_cols = st.columns(len(active_buckets))
@@ -1181,7 +1181,7 @@ if active_tab == "Weekly Key Updates":
                                     weekly_selected_ids.append(uc_id)
                 feat_selected = [uid for uid in weekly_selected_ids if uid in df_feat_all['USE_CASE_ID'].values]
                 feat_selected_rows = df_feat_all[df_feat_all['USE_CASE_ID'].isin(feat_selected)]
-                if st.session_state.get(f'weekly_ai_{key_feat}') and len(feat_selected_rows) > 0:
+                if st.session_state.get(f'weekly_ai_flag_{key_feat}') and len(feat_selected_rows) > 0:
                     st.markdown("---")
                     for _, row in feat_selected_rows.iterrows():
                         with st.expander(f"📋 {row['ACCOUNT_NAME']} — {row['USE_CASE_NAME']} (${row['EACV']:,.0f})", expanded=True):
@@ -1190,9 +1190,9 @@ if active_tab == "Weekly Key Updates":
                                 ai_result = generate_ai_summary(prompt)
                             st.markdown(escape_latex(ai_result))
                     if st.button("Clear Analysis", key=f"weekly_clear_{key_feat}"):
-                        st.session_state[f'weekly_ai_{key_feat}'] = False
+                        st.session_state[f'weekly_ai_flag_{key_feat}'] = False
                         st.rerun()
-                elif st.session_state.get(f'weekly_ai_{key_feat}') and len(feat_selected_rows) == 0:
+                elif st.session_state.get(f'weekly_ai_flag_{key_feat}') and len(feat_selected_rows) == 0:
                     st.info("Select use cases above, then click 🤖 AI Summary.")
 
         email_df_weekly = df_weekly[df_weekly['USE_CASE_ID'].isin(weekly_selected_ids)] if weekly_selected_ids else df_weekly
