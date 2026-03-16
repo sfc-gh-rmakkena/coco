@@ -1050,7 +1050,7 @@ if active_tab == "Overall DE/DL Summary":
 
 if active_tab == "Weekly Key Updates":
     st.subheader("Weekly Key Updates")
-    st.caption("Use cases grouped by Key Feature, broken down by stage bucket (1-3, 4-5, 6-7)")
+    st.caption("Use cases with recent SFDC history updates, filterable by Key Feature and stage bucket")
 
     filter_col1, filter_col2 = st.columns(2)
     with filter_col1:
@@ -1128,75 +1128,115 @@ if active_tab == "Weekly Key Updates":
         cutoff_date = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=last_n_history_days)
         df_weekly = df_weekly[df_weekly["LAST_HISTORY_UPDATE_DATE"].notna() & (df_weekly["LAST_HISTORY_UPDATE_DATE"] >= cutoff_date)].reset_index(drop=True)
     if not df_weekly.empty:
-        all_key_features = ["DE - Openflow", "DE - Openflow Oracle", "DE - Iceberg", "DE - Snowpark DE", "DE - Snowpark Connect", "DE - Dynamic Tables", "DE - Snowpipe Streaming", "DE - Snowpipe", "DE - Serverless Task", "DE - Connectors", "DE - dbt Projects", "DE - SAP Integration", "DE - Basic"]
-        key_features_list = [kf for kf in all_key_features if kf in key_features] if key_features else all_key_features
         stage_buckets = ['Stage 1-3', 'Stage 4-5', 'Stage 6-7']
 
+        all_weekly_key_features = sorted(set(
+            kf.strip()
+            for kfs in df_weekly["KEY_FEATURES"].dropna()
+            for kf in kfs.split(";")
+            if kf.strip() and kf.strip().startswith("DE -")
+        ))
+
+        filter_col_kf1, filter_col_kf2 = st.columns([3, 1])
+        with filter_col_kf1:
+            selected_weekly_key_features = st.multiselect("Filter by Key Feature", all_weekly_key_features, key="weekly_key_features_filter")
+
+        if selected_weekly_key_features:
+            kf_mask = df_weekly["KEY_FEATURES"].apply(
+                lambda x: any(kf.strip() in selected_weekly_key_features for kf in (x or "").split(";"))
+            )
+            df_weekly_filtered = df_weekly[kf_mask].reset_index(drop=True)
+        else:
+            df_weekly_filtered = df_weekly
+
         col1, col2, col3 = st.columns(3)
-        with col1: st.metric("Total Use Cases", len(df_weekly))
-        with col2: st.metric("Total EACV", f"${df_weekly['EACV'].sum()/1_000_000:.1f}M")
-        with col3: st.metric("Unique Accounts", df_weekly['ACCOUNT_NAME'].nunique())
+        with col1: st.metric("Total Use Cases", len(df_weekly_filtered))
+        with col2: st.metric("Total EACV", f"${df_weekly_filtered['EACV'].sum()/1_000_000:.1f}M")
+        with col3: st.metric("Unique Accounts", df_weekly_filtered['ACCOUNT_NAME'].nunique())
 
         stage_cols = st.columns(len(stage_buckets))
         for sc, sb in zip(stage_cols, stage_buckets):
-            db = df_weekly[df_weekly['STAGE_BUCKET'] == sb]
+            db = df_weekly_filtered[df_weekly_filtered['STAGE_BUCKET'] == sb]
             sc.metric(f"{sb} Use Cases", len(db), f"${db['EACV'].sum()/1_000_000:.1f}M EACV")
 
         st.markdown("---")
 
-        weekly_selected_ids = []
+        df_weekly_filtered["SFDC"] = df_weekly_filtered["USE_CASE_ID"].apply(lambda uid: f"{SFDC_BASE}/{uid}/view" if uid else "")
 
-        for key_feat in key_features_list:
-            df_feat_all = df_weekly[df_weekly['KEY_FEATURES'].str.contains(key_feat, case=False, na=False)]
-            if df_feat_all.empty:
-                continue
-            with st.expander(f"**{key_feat}** — {len(df_feat_all)} use cases (${df_feat_all['EACV'].sum()/1_000_000:.1f}M EACV)", expanded=True):
-                feat_select_key = f"wfeat_{key_feat}"
-                ai_btn_key = f"weekly_ai_{key_feat}"
-                top_col1, top_col2 = st.columns([3, 1])
-                with top_col1:
-                    feat_all = st.checkbox(f"✅ Select All {key_feat}", key=feat_select_key)
-                with top_col2:
-                    if st.button(f"🤖 AI Summary", key=ai_btn_key):
-                        st.session_state[f'weekly_ai_flag_{key_feat}'] = True
-                active_buckets = [sb for sb in stage_buckets if not df_feat_all[df_feat_all['STAGE_BUCKET'] == sb].empty]
-                if active_buckets:
-                    stage_cols = st.columns(len(active_buckets))
-                    for sc, sb in zip(stage_cols, active_buckets):
-                        df_feat_stage = df_feat_all[df_feat_all['STAGE_BUCKET'] == sb]
-                        with sc:
-                            stage_select_key = f"wstg_{key_feat}_{sb}"
-                            st.markdown(f"###### {sb} ({len(df_feat_stage)})")
-                            stage_all = st.checkbox(f"Select All", key=stage_select_key)
-                            for _, row in df_feat_stage.iterrows():
-                                uc_id = row['USE_CASE_ID']
-                                cb_key = f"wcb_{key_feat}_{sb}_{uc_id}"
-                                default_val = feat_all or stage_all
-                                checked = st.checkbox(
-                                    f"{row['ACCOUNT_NAME']} — {row['USE_CASE_NAME']} (${row['EACV']:,.0f}) [{row.get('ENGINEER', '')}]",
-                                    key=cb_key,
-                                    value=default_val
-                                )
-                                if checked:
-                                    weekly_selected_ids.append(uc_id)
-                feat_selected = [uid for uid in weekly_selected_ids if uid in df_feat_all['USE_CASE_ID'].values]
-                feat_selected_rows = df_feat_all[df_feat_all['USE_CASE_ID'].isin(feat_selected)]
-                if st.session_state.get(f'weekly_ai_flag_{key_feat}') and len(feat_selected_rows) > 0:
-                    st.markdown("---")
-                    for _, row in feat_selected_rows.iterrows():
-                        with st.expander(f"📋 {row['ACCOUNT_NAME']} — {row['USE_CASE_NAME']} (${row['EACV']:,.0f})", expanded=True):
-                            prompt = build_weekly_usecase_ai_prompt(row)
-                            with st.spinner(f"Analyzing {row['ACCOUNT_NAME']}..."):
-                                ai_result = generate_ai_summary(prompt)
-                            st.markdown(escape_latex(ai_result))
-                    if st.button("Clear Analysis", key=f"weekly_clear_{key_feat}"):
-                        st.session_state[f'weekly_ai_flag_{key_feat}'] = False
-                        st.rerun()
-                elif st.session_state.get(f'weekly_ai_flag_{key_feat}') and len(feat_selected_rows) == 0:
-                    st.info("Select use cases above, then click 🤖 AI Summary.")
+        grid_cols = ["ACCOUNT_NAME", "USE_CASE_NAME", "STAGE", "EACV", "STAGE_BUCKET", "ENGINEER", "KEY_FEATURES", "ENGAGEMENT_DRIVERS", "SPECIALISTS", "THEATER", "DECISION_DATE", "GO_LIVE_DATE", "LAST_HISTORY_UPDATE_DATE", "SFDC"]
+        display_cols = [c for c in grid_cols if c in df_weekly_filtered.columns]
+        weekly_display = df_weekly_filtered[display_cols].copy()
+        weekly_display = weekly_display.sort_values("EACV", ascending=False).reset_index(drop=True)
 
-        email_df_weekly = df_weekly[df_weekly['USE_CASE_ID'].isin(weekly_selected_ids)] if weekly_selected_ids else df_weekly
-        render_email_section(email_df_weekly, "DE/DL Weekly Key Updates", key_prefix="weekly")
+        for dc in ["DECISION_DATE", "GO_LIVE_DATE"]:
+            if dc in weekly_display.columns:
+                weekly_display[dc] = pd.to_datetime(weekly_display[dc], errors="coerce").dt.strftime("%Y-%m-%d")
+
+        st.dataframe(
+            weekly_display,
+            hide_index=True,
+            use_container_width=True,
+            height=min(600, 35 * len(weekly_display) + 38),
+            column_config={
+                "ACCOUNT_NAME": st.column_config.TextColumn("Account"),
+                "USE_CASE_NAME": st.column_config.TextColumn("Use Case"),
+                "STAGE": st.column_config.TextColumn("Stage"),
+                "EACV": st.column_config.NumberColumn("EACV", format="$%,.0f"),
+                "STAGE_BUCKET": st.column_config.TextColumn("Bucket"),
+                "ENGINEER": st.column_config.TextColumn("Engineer"),
+                "KEY_FEATURES": st.column_config.TextColumn("Key Features"),
+                "ENGAGEMENT_DRIVERS": st.column_config.TextColumn("Drivers"),
+                "SPECIALISTS": st.column_config.TextColumn("Specialists"),
+                "THEATER": st.column_config.TextColumn("Theater"),
+                "DECISION_DATE": st.column_config.TextColumn("Decision"),
+                "GO_LIVE_DATE": st.column_config.TextColumn("Go Live"),
+                "LAST_HISTORY_UPDATE_DATE": st.column_config.DatetimeColumn("Last Updated", format="YYYY-MM-DD"),
+                "SFDC": st.column_config.LinkColumn("SFDC", display_text=r".*/(.+)/view"),
+            },
+        )
+
+        if st.button("🤖 AI Summary", key="weekly_ai_btn"):
+            comment_cols = ['SE_COMMENTS', 'SPECIALIST_COMMENTS', 'IMPLEMENTATION_COMMENTS', 'PARTNER_COMMENTS', 'NEXT_STEPS']
+            rows_with_comments = df_weekly_filtered[df_weekly_filtered[comment_cols].apply(lambda r: r.str.strip().ne('').any(), axis=1)]
+            if rows_with_comments.empty:
+                rows_with_comments = df_weekly_filtered
+            comments_sorted = rows_with_comments.sort_values("EACV", ascending=False)
+            max_uc = 30
+            comments_subset = comments_sorted.head(max_uc)
+            comment_lines = []
+            for _, row in comments_subset.iterrows():
+                se = str(row.get("SE_COMMENTS", "") or "").strip()[:300]
+                spec = str(row.get("SPECIALIST_COMMENTS", "") or "").strip()[:300]
+                impl = str(row.get("IMPLEMENTATION_COMMENTS", "") or "").strip()[:300]
+                ns = str(row.get("NEXT_STEPS", "") or "").strip()[:300]
+                comment_lines.append(
+                    f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | Stage: {row['STAGE']} | EACV: ${row['EACV']:,.0f} | Engineer: {row.get('ENGINEER','')}\n"
+                    f"  SE: {se}\n  Specialist: {spec}\n  Implementation: {impl}\n  Next Steps: {ns}"
+                )
+            comments_block = "\n".join(comment_lines)
+            feat_label = ", ".join(selected_weekly_key_features) if selected_weekly_key_features else "All DE Features"
+            ai_prompt = (
+                f"You are a DE/DL team analyst. Analyze these {feat_label} use cases.\n\n"
+                f"There are {len(rows_with_comments)} use cases with comments (out of {len(df_weekly_filtered)} total).\n\n"
+                f"USE CASE DATA:\n{comments_block}\n\n"
+                "Provide a structured summary with these sections:\n"
+                "1. **What's Working** — Positive themes, successful patterns, products gaining traction.\n"
+                "2. **Key Risks / Blockers** — Concerns, delays, blockers, at-risk engagements.\n"
+                "3. **Next Action Items** — Specific recommended next steps. Reference account names.\n\n"
+                "IMPORTANT: Always include EACV dollar amounts when referencing accounts.\n"
+                "Be concise, data-driven, and reference specific accounts. Format with markdown."
+            )
+            with st.spinner(f"Analyzing {feat_label} with Cortex AI..."):
+                ai_result = generate_ai_summary(ai_prompt)
+            st.session_state['weekly_ai_result'] = ai_result
+
+        if isinstance(st.session_state.get('weekly_ai_result'), str):
+            render_rich_ai_summary(st.session_state['weekly_ai_result'], summary_id="weekly_ai_summary")
+            if st.button("Clear Summary", key="weekly_clear_ai"):
+                st.session_state['weekly_ai_result'] = None
+                st.rerun()
+
+        render_email_section(df_weekly_filtered, "DE/DL Weekly Key Updates", key_prefix="weekly")
     else:
         st.info("No use cases found matching the criteria.")
 
