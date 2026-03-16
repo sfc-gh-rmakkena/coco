@@ -1137,17 +1137,21 @@ if active_tab == "Weekly Key Updates":
             if kf.strip() and kf.strip().startswith("DE -")
         ))
 
-        filter_col_kf1, filter_col_kf2 = st.columns([3, 1])
+        filter_col_kf1, filter_col_kf2 = st.columns(2)
         with filter_col_kf1:
             selected_weekly_key_features = st.multiselect("Filter by Key Feature", all_weekly_key_features, key="weekly_key_features_filter")
+        with filter_col_kf2:
+            selected_weekly_stages = st.multiselect("Filter by Stage Bucket", stage_buckets, key="weekly_stage_bucket_filter")
 
+        df_weekly_filtered = df_weekly.copy()
         if selected_weekly_key_features:
-            kf_mask = df_weekly["KEY_FEATURES"].apply(
+            kf_mask = df_weekly_filtered["KEY_FEATURES"].apply(
                 lambda x: any(kf.strip() in selected_weekly_key_features for kf in (x or "").split(";"))
             )
-            df_weekly_filtered = df_weekly[kf_mask].reset_index(drop=True)
-        else:
-            df_weekly_filtered = df_weekly
+            df_weekly_filtered = df_weekly_filtered[kf_mask]
+        if selected_weekly_stages:
+            df_weekly_filtered = df_weekly_filtered[df_weekly_filtered["STAGE_BUCKET"].isin(selected_weekly_stages)]
+        df_weekly_filtered = df_weekly_filtered.reset_index(drop=True)
 
         col1, col2, col3 = st.columns(3)
         with col1: st.metric("Total Use Cases", len(df_weekly_filtered))
@@ -1167,17 +1171,19 @@ if active_tab == "Weekly Key Updates":
         display_cols = [c for c in grid_cols if c in df_weekly_filtered.columns]
         weekly_display = df_weekly_filtered[display_cols].copy()
         weekly_display = weekly_display.sort_values("EACV", ascending=False).reset_index(drop=True)
+        weekly_display.insert(0, "Select", False)
 
         for dc in ["DECISION_DATE", "GO_LIVE_DATE"]:
             if dc in weekly_display.columns:
                 weekly_display[dc] = pd.to_datetime(weekly_display[dc], errors="coerce").dt.strftime("%Y-%m-%d")
 
-        st.dataframe(
+        edited_weekly = st.data_editor(
             weekly_display,
             hide_index=True,
             use_container_width=True,
             height=min(600, 35 * len(weekly_display) + 38),
             column_config={
+                "Select": st.column_config.CheckboxColumn("Select", default=False),
                 "ACCOUNT_NAME": st.column_config.TextColumn("Account"),
                 "USE_CASE_NAME": st.column_config.TextColumn("Use Case"),
                 "STAGE": st.column_config.TextColumn("Stage"),
@@ -1193,31 +1199,58 @@ if active_tab == "Weekly Key Updates":
                 "LAST_HISTORY_UPDATE_DATE": st.column_config.DatetimeColumn("Last Updated", format="YYYY-MM-DD"),
                 "SFDC": st.column_config.LinkColumn("SFDC", display_text=r".*/(.+)/view"),
             },
+            disabled=[c for c in weekly_display.columns if c != "Select"],
+            key="weekly_data_editor",
         )
 
+        selected_rows = edited_weekly[edited_weekly["Select"] == True]
+        if not selected_rows.empty:
+            st.caption(f"{len(selected_rows)} use case(s) selected for AI Summary")
+
+        comment_field_map = {"All Fields": None, "Specialist Comments": "SPECIALIST_COMMENTS", "SE Comments": "SE_COMMENTS", "Partner Comments": "PARTNER_COMMENTS", "Professional Services": "IMPLEMENTATION_COMMENTS"}
+        active_comment_col = comment_field_map.get(selected_comment_type)
+
         if st.button("🤖 AI Summary", key="weekly_ai_btn"):
-            comment_cols = ['SE_COMMENTS', 'SPECIALIST_COMMENTS', 'IMPLEMENTATION_COMMENTS', 'PARTNER_COMMENTS', 'NEXT_STEPS']
-            rows_with_comments = df_weekly_filtered[df_weekly_filtered[comment_cols].apply(lambda r: r.str.strip().ne('').any(), axis=1)]
+            if not selected_rows.empty:
+                ai_indices = selected_rows.index
+                ai_source_full = df_weekly_filtered.loc[ai_indices]
+            else:
+                ai_source_full = df_weekly_filtered
+
+            if active_comment_col:
+                rows_with_comments = ai_source_full[ai_source_full[active_comment_col].fillna('').str.strip().ne('')]
+            else:
+                comment_cols = ['SE_COMMENTS', 'SPECIALIST_COMMENTS', 'IMPLEMENTATION_COMMENTS', 'PARTNER_COMMENTS', 'NEXT_STEPS']
+                rows_with_comments = ai_source_full[ai_source_full[comment_cols].apply(lambda r: r.str.strip().ne('').any(), axis=1)]
             if rows_with_comments.empty:
-                rows_with_comments = df_weekly_filtered
+                rows_with_comments = ai_source_full
             comments_sorted = rows_with_comments.sort_values("EACV", ascending=False)
             max_uc = 30
             comments_subset = comments_sorted.head(max_uc)
             comment_lines = []
             for _, row in comments_subset.iterrows():
-                se = str(row.get("SE_COMMENTS", "") or "").strip()[:300]
-                spec = str(row.get("SPECIALIST_COMMENTS", "") or "").strip()[:300]
-                impl = str(row.get("IMPLEMENTATION_COMMENTS", "") or "").strip()[:300]
-                ns = str(row.get("NEXT_STEPS", "") or "").strip()[:300]
-                comment_lines.append(
-                    f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | Stage: {row['STAGE']} | EACV: ${row['EACV']:,.0f} | Engineer: {row.get('ENGINEER','')}\n"
-                    f"  SE: {se}\n  Specialist: {spec}\n  Implementation: {impl}\n  Next Steps: {ns}"
-                )
+                if active_comment_col:
+                    comment_text = str(row.get(active_comment_col, "") or "").strip()[:500]
+                    comment_lines.append(
+                        f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | Stage: {row['STAGE']} | EACV: ${row['EACV']:,.0f} | Engineer: {row.get('ENGINEER','')}\n"
+                        f"  {selected_comment_type}: {comment_text}"
+                    )
+                else:
+                    se = str(row.get("SE_COMMENTS", "") or "").strip()[:300]
+                    spec = str(row.get("SPECIALIST_COMMENTS", "") or "").strip()[:300]
+                    impl = str(row.get("IMPLEMENTATION_COMMENTS", "") or "").strip()[:300]
+                    ns = str(row.get("NEXT_STEPS", "") or "").strip()[:300]
+                    comment_lines.append(
+                        f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | Stage: {row['STAGE']} | EACV: ${row['EACV']:,.0f} | Engineer: {row.get('ENGINEER','')}\n"
+                        f"  SE: {se}\n  Specialist: {spec}\n  Implementation: {impl}\n  Next Steps: {ns}"
+                    )
             comments_block = "\n".join(comment_lines)
             feat_label = ", ".join(selected_weekly_key_features) if selected_weekly_key_features else "All DE Features"
+            scope_label = f"{len(ai_source_full)} selected" if not selected_rows.empty else "all filtered"
+            comment_scope = f" (focused on {selected_comment_type})" if active_comment_col else ""
             ai_prompt = (
-                f"You are a DE/DL team analyst. Analyze these {feat_label} use cases.\n\n"
-                f"There are {len(rows_with_comments)} use cases with comments (out of {len(df_weekly_filtered)} total).\n\n"
+                f"You are a DE/DL team analyst. Analyze these {feat_label} use cases ({scope_label} use cases){comment_scope}.\n\n"
+                f"There are {len(rows_with_comments)} use cases with comments (out of {len(ai_source_full)} total).\n\n"
                 f"USE CASE DATA:\n{comments_block}\n\n"
                 "Provide a structured summary with these sections:\n"
                 "1. **What's Working** — Positive themes, successful patterns, products gaining traction.\n"
@@ -1226,7 +1259,7 @@ if active_tab == "Weekly Key Updates":
                 "IMPORTANT: Always include EACV dollar amounts when referencing accounts.\n"
                 "Be concise, data-driven, and reference specific accounts. Format with markdown."
             )
-            with st.spinner(f"Analyzing {feat_label} with Cortex AI..."):
+            with st.spinner(f"Analyzing {feat_label} ({scope_label}) with Cortex AI..."):
                 ai_result = generate_ai_summary(ai_prompt)
             st.session_state['weekly_ai_result'] = ai_result
 
