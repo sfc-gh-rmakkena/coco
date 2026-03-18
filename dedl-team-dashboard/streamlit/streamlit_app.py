@@ -91,6 +91,126 @@ def get_customer_list():
     """
     return run_query(query)['LATEST_SALESFORCE_ACCOUNT_NAME'].tolist()
 
+KEY_FEATURE_TO_CONSUMPTION = {
+    "DE - Openflow": ["Openflow", "Iceberg Openflow"],
+    "DE - Openflow Oracle": ["Openflow", "Iceberg Openflow"],
+    "DE - Iceberg": ["Iceberg DML", "Iceberg COPY", "Iceberg COPY / UNLOAD", "Iceberg UNLOAD", "Iceberg DT refresh",
+                     "Iceberg Data Engineering tools", "Iceberg Data Engineering tools - Ingestion", "Iceberg Data Engineering tools - Transformation",
+                     "Iceberg Native app connector", "Iceberg Openflow", "Iceberg Snowpark DE", "Iceberg Snowpipe",
+                     "Iceberg Spark connector", "Iceberg Stream access", "Iceberg Task", "Iceberg dbt projects in Snowflake", "Iceberg usage"],
+    "DE - Snowpark DE": ["Snowpark DE", "Iceberg Snowpark DE"],
+    "DE - Snowpark Connect": ["Spark connector", "Iceberg Spark connector"],
+    "DE - Dynamic Tables": ["DT refresh", "Iceberg DT refresh"],
+    "DE - Snowpipe Streaming": ["Snowpipe streaming", "Snowpipe streaming Kafka", "Snowpipe streaming v1", "Snowpipe streaming v2", "Snowpipe streaming DB connector"],
+    "DE - Snowpipe": ["Snowpipe", "Snowpipe Kafka", "Snowpipe kafka", "Iceberg Snowpipe"],
+    "DE - Serverless Task": ["Task", "Iceberg Task"],
+    "DE - Connectors": ["Native app connector", "Iceberg Native app connector", "Spark connector", "Iceberg Spark connector"],
+    "DE - dbt Projects": ["dbt projects in Snowflake", "Iceberg dbt projects in Snowflake"],
+    "DE - SAP Integration": ["Native app connector", "Iceberg Native app connector"],
+    "DE - Basic": ["DML", "COPY", "COPY / UNLOAD", "UNLOAD", "Copy files", "Data Engineering tools",
+                   "Data Engineering tools - Ingestion", "Data Engineering tools - Transformation", "Stream access"],
+}
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_de_consumption_by_account():
+    query = """
+    SELECT UPPER(LATEST_SALESFORCE_ACCOUNT_NAME) AS ACCOUNT_NAME_UPPER,
+           FEATURE, SUM(CREDITS) AS TOTAL_CREDITS
+    FROM FINANCE.CUSTOMER.FY26_PRODUCT_CATEGORY_REVENUE
+    WHERE PRODUCT_CATEGORY = 'Data Engineering'
+      AND DS >= DATEADD('day', -60, CURRENT_DATE())
+    GROUP BY UPPER(LATEST_SALESFORCE_ACCOUNT_NAME), FEATURE
+    """
+    return run_query(query)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_coco_usage_by_account():
+    query = """
+    SELECT UPPER(SALESFORCE_ACCOUNT_NAME) AS ACCOUNT_NAME_UPPER,
+           CLI_REQUEST_COUNT, CLI_DISTINCT_USERS,
+           TOTAL_REQUEST_COUNT, TOTAL_ESTIMATED_CREDITS,
+           LAST_USE_DATE
+    FROM TEMP.MALINIS.VW_COCO_ACCOUNT_TELEMETRY
+    WHERE IS_USING_COCO = TRUE
+    """
+    return run_query(query)
+
+def add_coco_usage(df):
+    if df.empty or 'ACCOUNT_NAME' not in df.columns:
+        df['COCO_USAGE'] = ''
+        df['COCO_CLI_REQUESTS'] = 0
+        df['COCO_TOTAL_REQUESTS'] = 0
+        return df
+    try:
+        coco_df = get_coco_usage_by_account()
+    except:
+        df['COCO_USAGE'] = 'Unknown'
+        df['COCO_CLI_REQUESTS'] = 0
+        df['COCO_TOTAL_REQUESTS'] = 0
+        return df
+    coco_lookup = {}
+    for _, row in coco_df.iterrows():
+        acct = row['ACCOUNT_NAME_UPPER']
+        if acct not in coco_lookup:
+            coco_lookup[acct] = {'cli': 0, 'total': 0}
+        coco_lookup[acct]['cli'] += int(row.get('CLI_REQUEST_COUNT', 0) or 0)
+        coco_lookup[acct]['total'] += int(row.get('TOTAL_REQUEST_COUNT', 0) or 0)
+    usage_list = []
+    cli_list = []
+    total_list = []
+    for _, row in df.iterrows():
+        acct_upper = str(row['ACCOUNT_NAME']).upper()
+        acct_data = coco_lookup.get(acct_upper, None)
+        if acct_data and acct_data['total'] > 0:
+            usage_list.append('Yes')
+            cli_list.append(acct_data['cli'])
+            total_list.append(acct_data['total'])
+        else:
+            usage_list.append('No')
+            cli_list.append(0)
+            total_list.append(0)
+    df['COCO_USAGE'] = usage_list
+    df['COCO_CLI_REQUESTS'] = cli_list
+    df['COCO_TOTAL_REQUESTS'] = total_list
+    return df
+
+def add_consumption_validation(df):
+    if df.empty or 'ACCOUNT_NAME' not in df.columns or 'KEY_FEATURES' not in df.columns:
+        df['CONSUMPTION_VALIDATED'] = ''
+        df['FEATURE_CREDITS'] = 0.0
+        return df
+    try:
+        consumption_df = get_de_consumption_by_account()
+    except:
+        df['CONSUMPTION_VALIDATED'] = 'Unknown'
+        df['FEATURE_CREDITS'] = 0.0
+        return df
+    consumption_lookup = {}
+    for _, row in consumption_df.iterrows():
+        acct = row['ACCOUNT_NAME_UPPER']
+        if acct not in consumption_lookup:
+            consumption_lookup[acct] = {}
+        consumption_lookup[acct][row['FEATURE']] = row['TOTAL_CREDITS']
+    validated_list = []
+    credits_list = []
+    for _, row in df.iterrows():
+        acct_upper = str(row['ACCOUNT_NAME']).upper()
+        kf_str = str(row.get('KEY_FEATURES', '') or '')
+        de_features = [kf.strip() for kf in kf_str.split(';') if kf.strip().startswith('DE -')]
+        mapped_consumption_features = set()
+        for kf in de_features:
+            mapped_consumption_features.update(KEY_FEATURE_TO_CONSUMPTION.get(kf, []))
+        acct_consumption = consumption_lookup.get(acct_upper, {})
+        total = sum(acct_consumption.get(f, 0) for f in mapped_consumption_features)
+        if total > 0:
+            validated_list.append('Yes')
+        else:
+            validated_list.append('No')
+        credits_list.append(round(total, 1))
+    df['CONSUMPTION_VALIDATED'] = validated_list
+    df['FEATURE_CREDITS'] = credits_list
+    return df
+
 def name_to_email(name):
     if not name or name == 'Unknown' or pd.isna(name):
         return None
@@ -159,7 +279,11 @@ def build_bulk_ai_prompt(df):
         features = row.get('KEY_FEATURES', '') or 'None'
         engineer = row.get('ENGINEER', 'Unknown')
         drivers = row.get('ENGAGEMENT_DRIVERS', '') or 'SE'
-        summary_data.append(f"- {account} | Stage: {stage} | EACV: ${eacv:,.0f} | Features: {features[:400]} | Drivers: {drivers} | PSE: {engineer}")
+        consumption = row.get('CONSUMPTION_VALIDATED', '') or 'N/A'
+        feature_credits = row.get('FEATURE_CREDITS', 0) or 0
+        coco = row.get('COCO_USAGE', '') or 'N/A'
+        coco_cli = row.get('COCO_CLI_REQUESTS', 0) or 0
+        summary_data.append(f"- {account} | Stage: {stage} | EACV: ${eacv:,.0f} | Features: {features[:400]} | Drivers: {drivers} | PSE: {engineer} | Consumption: {consumption} (Credits: {feature_credits:,.0f}) | CoCo: {coco} (CLI Reqs: {coco_cli})")
     
     use_cases_text = "\n".join(summary_data)
     
@@ -177,6 +301,10 @@ def build_bulk_ai_prompt(df):
 **TOP 5 BY EACV:**
 {top_eacv_text}
 
+**CONSUMPTION & COCO OVERVIEW:**
+- Accounts with Validated Consumption: {len(df[df.get('CONSUMPTION_VALIDATED', pd.Series(dtype=str)).eq('Yes')]) if 'CONSUMPTION_VALIDATED' in df.columns else 'N/A'}
+- Accounts using CoCo (Cortex Code): {len(df[df.get('COCO_USAGE', pd.Series(dtype=str)).eq('Yes')]) if 'COCO_USAGE' in df.columns else 'N/A'}
+
 **SAMPLE USE CASES:**
 {use_cases_text}
 {'... and ' + str(len(df) - 25) + ' more' if len(df) > 25 else ''}
@@ -188,6 +316,7 @@ def build_bulk_ai_prompt(df):
 - Example format: "JP Morgan ($8M EACV) - strong Snowpipe Streaming adoption"
 - Highlight which DE features are driving the most success
 - Name top-performing PSEs and their impact
+- Call out accounts with validated consumption credits and CoCo (Cortex Code) adoption as positive signals
 
 **Issues / Problems:**
 For EACH issue, provide this format:
@@ -217,6 +346,11 @@ def build_usecase_ai_prompt(row):
     comments = row.get('SE_COMMENTS', '') or 'None'
     next_steps = row.get('NEXT_STEPS', '') or 'None'
     drivers = row.get('ENGAGEMENT_DRIVERS', '') or 'SE'
+    consumption = row.get('CONSUMPTION_VALIDATED', '') or 'N/A'
+    feature_credits = row.get('FEATURE_CREDITS', 0) or 0
+    coco = row.get('COCO_USAGE', '') or 'N/A'
+    coco_cli = row.get('COCO_CLI_REQUESTS', 0) or 0
+    coco_total = row.get('COCO_TOTAL_REQUESTS', 0) or 0
     
     return f"""Analyze this specific DE/DL use case and provide actionable insights:
 
@@ -229,6 +363,8 @@ def build_usecase_ai_prompt(row):
 - Engagement Drivers: {drivers}
 - PSE: {engineer}
 - Technical Use Case: {tech_use_case}
+- Consumption Validated: {consumption} | Feature Credits: {feature_credits:,.0f}
+- CoCo (Cortex Code) Usage: {coco} | CLI Requests: {coco_cli} | Total Requests: {coco_total}
 - SE Comments: {comments[:400] if comments else 'None'}
 - Next Steps: {next_steps[:400] if next_steps else 'None'}
 
@@ -245,8 +381,10 @@ def build_usecase_ai_prompt(row):
 **Action Items:**
 - 3 specific next steps to drive success with owner and timeline
 - Include any additional DE features that could benefit this account
+- If consumption is not validated or CoCo is not adopted, flag as an action item
 
 IMPORTANT: Always reference the EACV dollar amount in your narrative — quantify the opportunity size and its implications.
+Note consumption validation and CoCo adoption status in your analysis — these are key health indicators.
 
 Keep response under 200 words. Be specific and actionable."""
 
@@ -265,6 +403,10 @@ def build_weekly_usecase_ai_prompt(row):
     gvp = row.get('GVP', '') or 'Unknown'
     theater = row.get('THEATER', '') or 'Unknown'
     drivers = row.get('ENGAGEMENT_DRIVERS', '') or 'SE'
+    consumption = row.get('CONSUMPTION_VALIDATED', '') or 'N/A'
+    feature_credits = row.get('FEATURE_CREDITS', 0) or 0
+    coco = row.get('COCO_USAGE', '') or 'N/A'
+    coco_cli = row.get('COCO_CLI_REQUESTS', 0) or 0
 
     return f"""Analyze this DE/DL use case and provide actionable insights:
 
@@ -276,6 +418,8 @@ def build_weekly_usecase_ai_prompt(row):
 - Key Features: {features}
 - Engagement Drivers: {drivers}
 - Technical Use Case: {tech_use_case}
+- Consumption Validated: {consumption} | Feature Credits: {feature_credits:,.0f}
+- CoCo (Cortex Code) Usage: {coco} | CLI Requests: {coco_cli}
 - GVP: {gvp} | Theater: {theater}
 - SE Comments: {se_comments[:400] if se_comments else 'None'}
 - Implementation Comments: {impl_comments[:400] if impl_comments else 'None'}
@@ -296,8 +440,10 @@ def build_weekly_usecase_ai_prompt(row):
 **Action Items:**
 - 3 specific next steps to drive success with owner and timeline
 - Include any additional DE features that could benefit this account
+- If consumption is not validated or CoCo is not adopted, flag as an action item
 
 IMPORTANT: Always reference the EACV dollar amount in your narrative — quantify the opportunity size and its implications.
+Note consumption validation and CoCo adoption status as key health indicators.
 
 Keep response under 200 words. Be specific and actionable."""
 
@@ -800,6 +946,8 @@ stage_options = ["1 - Discovery", "2 - Scoping", "3 - Technical / Business Valid
 stage_filter = st.sidebar.multiselect("Use Case Stage", stage_options)
 account_name_search = st.sidebar.text_input("Account Name", value="", key="account_name_filter", help="Filter by account name (case-insensitive). Leave blank for all.")
 min_acv = st.sidebar.number_input("Min EACV ($)", min_value=0, value=1, step=1, key="min_acv_filter")
+consumption_validated_filter = st.sidebar.selectbox("Consumption Validated", ["All", "Yes", "No"], index=0, key="consumption_validated_filter", help="Filter use cases by whether the account has actual DE consumption (last 60 days) matching tagged Key Features.")
+coco_usage_filter = st.sidebar.selectbox("CoCo Usage", ["All", "Yes", "No"], index=0, key="coco_usage_filter", help="Filter use cases by whether the account has Cortex Code (CoCo) CLI/UI usage.")
 
 
 emp_filter = ""
@@ -829,16 +977,34 @@ def apply_driver_filter(df):
         mask = mask | df['ENGAGEMENT_DRIVERS'].fillna('').str.contains(d, case=False, na=False)
     return df[mask].reset_index(drop=True)
 
+def apply_consumption_filter(df):
+    if df.empty or 'CONSUMPTION_VALIDATED' not in df.columns:
+        return df
+    if consumption_validated_filter == "Yes":
+        return df[df['CONSUMPTION_VALIDATED'] == 'Yes'].reset_index(drop=True)
+    elif consumption_validated_filter == "No":
+        return df[df['CONSUMPTION_VALIDATED'] == 'No'].reset_index(drop=True)
+    return df
+
+def apply_coco_filter(df):
+    if df.empty or 'COCO_USAGE' not in df.columns:
+        return df
+    if coco_usage_filter == "Yes":
+        return df[df['COCO_USAGE'] == 'Yes'].reset_index(drop=True)
+    elif coco_usage_filter == "No":
+        return df[df['COCO_USAGE'] == 'No'].reset_index(drop=True)
+    return df
+
 TAB_NAMES = ["Overall DE/DL Summary", "AFE All Engagements", "Weekly Key Updates", "Consumption Credits", "PSS-AFE Team Commentry", "Services Team Commentry"]
 active_tab = st.radio("", TAB_NAMES, horizontal=True, label_visibility="collapsed", key="active_tab")
 
-display_cols = ['ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'ENGINEER', 'MANAGER', 'KEY_FEATURES', 'ENGAGEMENT_DRIVERS', 'SPECIALISTS', 'THEATER', 'GVP', 'SFDC']
+display_cols = ['ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'ENGINEER', 'MANAGER', 'KEY_FEATURES', 'CONSUMPTION_VALIDATED', 'FEATURE_CREDITS', 'COCO_USAGE', 'COCO_CLI_REQUESTS', 'COCO_TOTAL_REQUESTS', 'ENGAGEMENT_DRIVERS', 'SPECIALISTS', 'THEATER', 'GVP', 'SFDC']
 
 if active_tab == "AFE All Engagements":
     st.subheader("All Engagements")
     with st.spinner('Loading all engagements...'):
         query = build_afe_query(str(start_date), str(end_date), emp_filter, feature_filter, key_feat_filter, gvp_clause, theater_clause, stage_clause, won_only=False)
-        df_all = apply_driver_filter(run_query(query))
+        df_all = apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(query))))))
     
     if not df_all.empty:
         df_all["SFDC"] = df_all["USE_CASE_ID"].apply(lambda uid: f"{SFDC_BASE}/{uid}/view" if uid else "")
@@ -860,6 +1026,11 @@ if active_tab == "AFE All Engagements":
                 "Select": st.column_config.CheckboxColumn("Select", default=False, width="small"),
                 "EACV": st.column_config.NumberColumn("EACV", format="$%.0f"),
                 "KEY_FEATURES": st.column_config.TextColumn("Key Features", width="medium"),
+                "CONSUMPTION_VALIDATED": st.column_config.TextColumn("Validated", width="small"),
+                "FEATURE_CREDITS": st.column_config.NumberColumn("Feature Credits (60d)", format="%.1f"),
+                "COCO_USAGE": st.column_config.TextColumn("CoCo", width="small"),
+                "COCO_CLI_REQUESTS": st.column_config.NumberColumn("CoCo CLI Reqs"),
+                "COCO_TOTAL_REQUESTS": st.column_config.NumberColumn("CoCo Total Reqs"),
                 "ENGAGEMENT_DRIVERS": st.column_config.TextColumn("Drivers", width="medium"),
                 "SPECIALISTS": st.column_config.TextColumn("Specialists", width="medium"),
                 "SFDC": st.column_config.LinkColumn("SFDC", display_text=r".*/(.+)/view"),
@@ -969,7 +1140,7 @@ if active_tab == "Overall DE/DL Summary":
           {feature_filter} {key_feat_filter} {gvp_clause} {theater_clause} {account_name_clause}
         ORDER BY EACV DESC NULLS LAST
         """
-        df_summary = apply_driver_filter(run_query(summary_query))
+        df_summary = apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(summary_query))))))
     
     if not df_summary.empty:
         df_summary["SFDC"] = df_summary["USE_CASE_ID"].apply(lambda uid: f"{SFDC_BASE}/{uid}/view" if uid else "")
@@ -1003,7 +1174,7 @@ if active_tab == "Overall DE/DL Summary":
         st.plotly_chart(fig, use_container_width=True)
         
         st.markdown("### All DE/DL Use Cases")
-        summary_display_cols = ['STAGE_BUCKET', 'ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'KEY_FEATURES', 'ENGAGEMENT_DRIVERS', 'SPECIALISTS', 'ENGINEER', 'SFDC']
+        summary_display_cols = ['STAGE_BUCKET', 'ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'KEY_FEATURES', 'CONSUMPTION_VALIDATED', 'FEATURE_CREDITS', 'COCO_USAGE', 'COCO_CLI_REQUESTS', 'COCO_TOTAL_REQUESTS', 'ENGAGEMENT_DRIVERS', 'SPECIALISTS', 'ENGINEER', 'SFDC']
         df_summary_display = df_summary[summary_display_cols].copy()
         df_summary_display.insert(0, 'Select', False)
         
@@ -1015,6 +1186,11 @@ if active_tab == "Overall DE/DL Summary":
                 "Select": st.column_config.CheckboxColumn("Select", default=False, width="small"),
                 "STAGE_BUCKET": st.column_config.TextColumn("Stage Bucket"),
                 "EACV": st.column_config.NumberColumn("EACV", format="$%.0f"),
+                "CONSUMPTION_VALIDATED": st.column_config.TextColumn("Validated", width="small"),
+                "FEATURE_CREDITS": st.column_config.NumberColumn("Feature Credits (60d)", format="%.1f"),
+                "COCO_USAGE": st.column_config.TextColumn("CoCo", width="small"),
+                "COCO_CLI_REQUESTS": st.column_config.NumberColumn("CoCo CLI Reqs"),
+                "COCO_TOTAL_REQUESTS": st.column_config.NumberColumn("CoCo Total Reqs"),
                 "ENGAGEMENT_DRIVERS": st.column_config.TextColumn("Drivers", width="medium"),
                 "SFDC": st.column_config.LinkColumn("SFDC", display_text=r".*/(.+)/view"),
             },
@@ -1121,7 +1297,7 @@ if active_tab == "Weekly Key Updates":
           {gvp_clause} {theater_clause} {key_feat_filter} {account_name_clause}
         ORDER BY UC.USE_CASE_EACV DESC NULLS LAST
         """
-        df_weekly = apply_driver_filter(run_query(weekly_query))
+        df_weekly = apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(weekly_query))))))
     
     if not df_weekly.empty:
         df_weekly["LAST_HISTORY_UPDATE_DATE"] = pd.to_datetime(df_weekly["LAST_HISTORY_UPDATE_DATE"], errors="coerce")
@@ -1167,7 +1343,7 @@ if active_tab == "Weekly Key Updates":
 
         df_weekly_filtered["SFDC"] = df_weekly_filtered["USE_CASE_ID"].apply(lambda uid: f"{SFDC_BASE}/{uid}/view" if uid else "")
 
-        grid_cols = ["ACCOUNT_NAME", "USE_CASE_NAME", "STAGE", "EACV", "STAGE_BUCKET", "ENGINEER", "KEY_FEATURES", "ENGAGEMENT_DRIVERS", "SPECIALISTS", "THEATER", "DECISION_DATE", "GO_LIVE_DATE", "LAST_HISTORY_UPDATE_DATE", "SFDC"]
+        grid_cols = ["ACCOUNT_NAME", "USE_CASE_NAME", "STAGE", "EACV", "STAGE_BUCKET", "ENGINEER", "KEY_FEATURES", "CONSUMPTION_VALIDATED", "FEATURE_CREDITS", "COCO_USAGE", "COCO_CLI_REQUESTS", "COCO_TOTAL_REQUESTS", "ENGAGEMENT_DRIVERS", "SPECIALISTS", "THEATER", "DECISION_DATE", "GO_LIVE_DATE", "LAST_HISTORY_UPDATE_DATE", "SFDC"]
         display_cols = [c for c in grid_cols if c in df_weekly_filtered.columns]
         weekly_display = df_weekly_filtered[display_cols].copy()
         weekly_display = weekly_display.sort_values("EACV", ascending=False).reset_index(drop=True)
@@ -1191,6 +1367,11 @@ if active_tab == "Weekly Key Updates":
                 "STAGE_BUCKET": st.column_config.TextColumn("Bucket"),
                 "ENGINEER": st.column_config.TextColumn("Engineer"),
                 "KEY_FEATURES": st.column_config.TextColumn("Key Features"),
+                "CONSUMPTION_VALIDATED": st.column_config.TextColumn("Validated"),
+                "FEATURE_CREDITS": st.column_config.NumberColumn("Feature Credits (60d)", format="%.1f"),
+                "COCO_USAGE": st.column_config.TextColumn("CoCo", width="small"),
+                "COCO_CLI_REQUESTS": st.column_config.NumberColumn("CoCo CLI Reqs"),
+                "COCO_TOTAL_REQUESTS": st.column_config.NumberColumn("CoCo Total Reqs"),
                 "ENGAGEMENT_DRIVERS": st.column_config.TextColumn("Drivers"),
                 "SPECIALISTS": st.column_config.TextColumn("Specialists"),
                 "THEATER": st.column_config.TextColumn("Theater"),
@@ -1231,8 +1412,11 @@ if active_tab == "Weekly Key Updates":
             for _, row in comments_subset.iterrows():
                 if active_comment_col:
                     comment_text = str(row.get(active_comment_col, "") or "").strip()[:500]
+                    consumption = str(row.get('CONSUMPTION_VALIDATED', '') or 'N/A')
+                    coco = str(row.get('COCO_USAGE', '') or 'N/A')
+                    coco_cli = row.get('COCO_CLI_REQUESTS', 0) or 0
                     comment_lines.append(
-                        f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | Stage: {row['STAGE']} | EACV: ${row['EACV']:,.0f} | Engineer: {row.get('ENGINEER','')}\n"
+                        f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | Stage: {row['STAGE']} | EACV: ${row['EACV']:,.0f} | Engineer: {row.get('ENGINEER','')} | Consumption: {consumption} | CoCo: {coco} (CLI: {coco_cli})\n"
                         f"  {selected_comment_type}: {comment_text}"
                     )
                 else:
@@ -1240,8 +1424,11 @@ if active_tab == "Weekly Key Updates":
                     spec = str(row.get("SPECIALIST_COMMENTS", "") or "").strip()[:300]
                     impl = str(row.get("IMPLEMENTATION_COMMENTS", "") or "").strip()[:300]
                     ns = str(row.get("NEXT_STEPS", "") or "").strip()[:300]
+                    consumption = str(row.get('CONSUMPTION_VALIDATED', '') or 'N/A')
+                    coco = str(row.get('COCO_USAGE', '') or 'N/A')
+                    coco_cli = row.get('COCO_CLI_REQUESTS', 0) or 0
                     comment_lines.append(
-                        f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | Stage: {row['STAGE']} | EACV: ${row['EACV']:,.0f} | Engineer: {row.get('ENGINEER','')}\n"
+                        f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | Stage: {row['STAGE']} | EACV: ${row['EACV']:,.0f} | Engineer: {row.get('ENGINEER','')} | Consumption: {consumption} | CoCo: {coco} (CLI: {coco_cli})\n"
                         f"  SE: {se}\n  Specialist: {spec}\n  Implementation: {impl}\n  Next Steps: {ns}"
                     )
             comments_block = "\n".join(comment_lines)
@@ -1250,7 +1437,9 @@ if active_tab == "Weekly Key Updates":
             comment_scope = f" (focused on {selected_comment_type})" if active_comment_col else ""
             ai_prompt = (
                 f"You are a DE/DL team analyst. Analyze these {feat_label} use cases ({scope_label} use cases){comment_scope}.\n\n"
-                f"There are {len(rows_with_comments)} use cases with comments (out of {len(ai_source_full)} total).\n\n"
+                f"There are {len(rows_with_comments)} use cases with comments (out of {len(ai_source_full)} total).\n"
+                f"Consumption Validated: {len(ai_source_full[ai_source_full.get('CONSUMPTION_VALIDATED', pd.Series(dtype=str)).eq('Yes')]) if 'CONSUMPTION_VALIDATED' in ai_source_full.columns else 'N/A'} accounts | "
+                f"CoCo Users: {len(ai_source_full[ai_source_full.get('COCO_USAGE', pd.Series(dtype=str)).eq('Yes')]) if 'COCO_USAGE' in ai_source_full.columns else 'N/A'} accounts\n\n"
                 f"USE CASE DATA:\n{comments_block}\n\n"
                 "Provide a structured summary with these sections:\n"
                 "1. **What's Working** — Positive themes, successful patterns, products gaining traction.\n"
@@ -1317,25 +1506,7 @@ if active_tab == "Consumption Credits":
         df_consumption_wow = run_query(consumption_wow_query)
 
     if not df_consumption_daily.empty:
-        key_feature_to_consumption = {
-            "DE - Openflow": ["Openflow", "Iceberg Openflow"],
-            "DE - Openflow Oracle": ["Openflow", "Iceberg Openflow"],
-            "DE - Iceberg": ["Iceberg DML", "Iceberg COPY", "Iceberg COPY / UNLOAD", "Iceberg UNLOAD", "Iceberg DT refresh",
-                             "Iceberg Data Engineering tools", "Iceberg Data Engineering tools - Ingestion", "Iceberg Data Engineering tools - Transformation",
-                             "Iceberg Native app connector", "Iceberg Openflow", "Iceberg Snowpark DE", "Iceberg Snowpipe",
-                             "Iceberg Spark connector", "Iceberg Stream access", "Iceberg Task", "Iceberg dbt projects in Snowflake", "Iceberg usage"],
-            "DE - Snowpark DE": ["Snowpark DE", "Iceberg Snowpark DE"],
-            "DE - Snowpark Connect": ["Spark connector", "Iceberg Spark connector"],
-            "DE - Dynamic Tables": ["DT refresh", "Iceberg DT refresh"],
-            "DE - Snowpipe Streaming": ["Snowpipe streaming", "Snowpipe streaming Kafka", "Snowpipe streaming v1", "Snowpipe streaming v2", "Snowpipe streaming DB connector"],
-            "DE - Snowpipe": ["Snowpipe", "Snowpipe Kafka", "Snowpipe kafka", "Iceberg Snowpipe"],
-            "DE - Serverless Task": ["Task", "Iceberg Task"],
-            "DE - Connectors": ["Native app connector", "Iceberg Native app connector", "Spark connector", "Iceberg Spark connector"],
-            "DE - dbt Projects": ["dbt projects in Snowflake", "Iceberg dbt projects in Snowflake"],
-            "DE - SAP Integration": ["Native app connector", "Iceberg Native app connector"],
-            "DE - Basic": ["DML", "COPY", "COPY / UNLOAD", "UNLOAD", "Copy files", "Data Engineering tools",
-                           "Data Engineering tools - Ingestion", "Data Engineering tools - Transformation", "Stream access"],
-        }
+        key_feature_to_consumption = KEY_FEATURE_TO_CONSUMPTION
 
         current_kf = tuple(sorted(key_features)) if key_features else ()
         if st.session_state.get('_prev_key_features') != current_kf:
@@ -1517,6 +1688,10 @@ if active_tab == "PSS-AFE Team Commentry":
         combined_data = afe_data.copy()
 
     combined_data = apply_driver_filter(combined_data)
+    combined_data = add_consumption_validation(combined_data)
+    combined_data = apply_consumption_filter(combined_data)
+    combined_data = add_coco_usage(combined_data)
+    combined_data = apply_coco_filter(combined_data)
     cutoff_7d = date.today() - timedelta(days=7)
     cutoff_14d = date.today() - timedelta(days=14)
     today_dt = date.today()
@@ -1836,9 +2011,12 @@ if active_tab == "PSS-AFE Team Commentry":
                 comment_text = str(row["SPECIALIST_COMMENTS"]).strip()[:400]
                 row_features = str(row.get("KEY_FEATURES", "") or "").strip()
                 row_drivers = str(row.get("ENGAGEMENT_DRIVERS", "") or "SE").strip()
+                row_consumption = str(row.get('CONSUMPTION_VALIDATED', '') or 'N/A')
+                row_coco = str(row.get('COCO_USAGE', '') or 'N/A')
+                row_coco_cli = row.get('COCO_CLI_REQUESTS', 0) or 0
                 comment_lines.append(
                     f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | SDM: {row['SPECIALIST']} | "
-                    f"Stage: {row['USE_CASE_STAGE']} | EACV: ${row['USE_CASE_EACV']:,.0f} | Features: {row_features} | Drivers: {row_drivers}\n"
+                    f"Stage: {row['USE_CASE_STAGE']} | EACV: ${row['USE_CASE_EACV']:,.0f} | Features: {row_features} | Drivers: {row_drivers} | Consumption: {row_consumption} | CoCo: {row_coco} (CLI: {row_coco_cli})\n"
                     f"  Comment: {comment_text}"
                 )
             comments_block = "\n".join(comment_lines)
@@ -1864,13 +2042,16 @@ if active_tab == "PSS-AFE Team Commentry":
             ai_prompt = (
                 "You are a specialist engagement analyst. Analyze the following specialist comments from Snowflake use case engagements.\n\n"
                 f"{filter_context}"
-                f"There are {len(comments_data)} use cases with specialist comments (out of {len(selected_detail)} selected).\n\n"
+                f"There are {len(comments_data)} use cases with specialist comments (out of {len(selected_detail)} selected).\n"
+                f"Consumption Validated: {len(selected_detail[selected_detail.get('CONSUMPTION_VALIDATED', pd.Series(dtype=str)).eq('Yes')]) if 'CONSUMPTION_VALIDATED' in selected_detail.columns else 'N/A'} | "
+                f"CoCo Users: {len(selected_detail[selected_detail.get('COCO_USAGE', pd.Series(dtype=str)).eq('Yes')]) if 'COCO_USAGE' in selected_detail.columns else 'N/A'}\n\n"
                 f"SPECIALIST COMMENTS:\n{comments_block}\n\n"
                 "Provide a structured summary with these sections:\n"
-                "1. **What's Working** — Identify positive themes, successful patterns, products gaining traction, and strong engagements from the comments.\n"
-                "2. **Key Risks / Blockers** — Any concerns, delays, blockers, or at-risk engagements mentioned in comments.\n"
+                "1. **What's Working** — Identify positive themes, successful patterns, products gaining traction, and strong engagements from the comments. Highlight accounts with validated consumption and CoCo adoption.\n"
+                "2. **Key Risks / Blockers** — Any concerns, delays, blockers, or at-risk engagements mentioned in comments. Flag accounts without consumption validation or CoCo adoption.\n"
                 "3. **Next Action Items** — Specific recommended next steps based on the comments. Be actionable and reference account names.\n\n"
-                "IMPORTANT: Always include EACV dollar amounts when referencing accounts — quantify pipeline at risk, wins, and action items by dollar value.\n\n"
+                "IMPORTANT: Always include EACV dollar amounts when referencing accounts — quantify pipeline at risk, wins, and action items by dollar value.\n"
+                "Note Consumption Validation and CoCo (Cortex Code) adoption as key health indicators.\n\n"
                 "Be concise, data-driven, and reference specific accounts/use cases. Format with markdown."
             )
             with st.spinner("Analyzing specialist comments with Cortex AI..."):
@@ -1941,6 +2122,10 @@ if active_tab == "Services Team Commentry":
 
     svc_combined_members = svc_team_members
     svc_combined_data = svc_data.copy()
+    svc_combined_data = add_consumption_validation(svc_combined_data)
+    svc_combined_data = apply_consumption_filter(svc_combined_data)
+    svc_combined_data = add_coco_usage(svc_combined_data)
+    svc_combined_data = apply_coco_filter(svc_combined_data)
 
     if svc_driver_filter and not svc_combined_data.empty and 'ENGAGEMENT_DRIVERS' in svc_combined_data.columns:
         svc_drv_mask = pd.Series(False, index=svc_combined_data.index)
@@ -2256,9 +2441,12 @@ if active_tab == "Services Team Commentry":
                     comment_text = str(row["IMPLEMENTATION_COMMENTS"]).strip()[:400]
                     row_features = str(row.get("KEY_FEATURES", "") or "").strip()
                     row_drivers = str(row.get("ENGAGEMENT_DRIVERS", "") or "SE").strip()
+                    row_consumption = str(row.get('CONSUMPTION_VALIDATED', '') or 'N/A')
+                    row_coco = str(row.get('COCO_USAGE', '') or 'N/A')
+                    row_coco_cli = row.get('COCO_CLI_REQUESTS', 0) or 0
                     svc_comment_lines.append(
                         f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | AFE: {row['SPECIALIST']} | "
-                        f"Stage: {row['USE_CASE_STAGE']} | EACV: ${row['USE_CASE_EACV']:,.0f} | Features: {row_features} | Drivers: {row_drivers}\n"
+                        f"Stage: {row['USE_CASE_STAGE']} | EACV: ${row['USE_CASE_EACV']:,.0f} | Features: {row_features} | Drivers: {row_drivers} | Consumption: {row_consumption} | CoCo: {row_coco} (CLI: {row_coco_cli})\n"
                         f"  Comment: {comment_text}"
                     )
                 svc_comments_block = "\n".join(svc_comment_lines)
@@ -2285,13 +2473,16 @@ if active_tab == "Services Team Commentry":
                 svc_ai_prompt = (
                     "You are a specialist engagement analyst. Analyze the following specialist comments from Snowflake use case engagements.\n\n"
                     f"{svc_filter_context}"
-                    f"There are {len(svc_comments_data)} use cases with specialist comments (out of {len(svc_selected_detail)} selected).\n\n"
+                    f"There are {len(svc_comments_data)} use cases with specialist comments (out of {len(svc_selected_detail)} selected).\n"
+                    f"Consumption Validated: {len(svc_selected_detail[svc_selected_detail.get('CONSUMPTION_VALIDATED', pd.Series(dtype=str)).eq('Yes')]) if 'CONSUMPTION_VALIDATED' in svc_selected_detail.columns else 'N/A'} | "
+                    f"CoCo Users: {len(svc_selected_detail[svc_selected_detail.get('COCO_USAGE', pd.Series(dtype=str)).eq('Yes')]) if 'COCO_USAGE' in svc_selected_detail.columns else 'N/A'}\n\n"
                     f"SPECIALIST COMMENTS:\n{svc_comments_block}\n\n"
                     "Provide a structured summary with these sections:\n"
-                    "1. **What's Working** — Identify positive themes, successful patterns, products gaining traction, and strong engagements from the comments.\n"
-                    "2. **Key Risks / Blockers** — Any concerns, delays, blockers, or at-risk engagements mentioned in comments.\n"
+                    "1. **What's Working** — Identify positive themes, successful patterns, products gaining traction, and strong engagements from the comments. Highlight accounts with validated consumption and CoCo adoption.\n"
+                    "2. **Key Risks / Blockers** — Any concerns, delays, blockers, or at-risk engagements mentioned in comments. Flag accounts without consumption validation or CoCo adoption.\n"
                     "3. **Next Action Items** — Specific recommended next steps based on the comments. Be actionable and reference account names.\n\n"
-                    "IMPORTANT: Always include EACV dollar amounts when referencing accounts — quantify pipeline at risk, wins, and action items by dollar value.\n\n"
+                    "IMPORTANT: Always include EACV dollar amounts when referencing accounts — quantify pipeline at risk, wins, and action items by dollar value.\n"
+                    "Note Consumption Validation and CoCo (Cortex Code) adoption as key health indicators.\n\n"
                     "Be concise, data-driven, and reference specific accounts/use cases. Format with markdown."
                 )
                 with st.spinner("Analyzing specialist comments with Cortex AI..."):
