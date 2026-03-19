@@ -807,12 +807,13 @@ def load_services_org():
     query = """
         SELECT DISTINCT EMPLOYEE_NAME AS NAME
         FROM SALES.SE_REPORTING.SE_ORG_HIERARCHY_DS
-        WHERE DS = (SELECT MAX(DS) FROM SALES.SE_REPORTING.SE_ORG_HIERARCHY_DS WHERE EMPLOYEE_NAME = 'Ganesh Krishnamurthy')
+        WHERE DS = (SELECT MAX(DS) FROM SALES.SE_REPORTING.SE_ORG_HIERARCHY_DS WHERE EMPLOYEE_NAME = 'Andrew Oh')
           AND IS_ACTIVE = TRUE
-          AND (MANAGER_NAME = 'Ganesh Krishnamurthy'
-            OR FIRST_LINE_MANAGER = 'Ganesh Krishnamurthy'
-            OR SECOND_LINE_MANAGER = 'Ganesh Krishnamurthy'
-            OR EMPLOYEE_NAME = 'Ganesh Krishnamurthy')
+          AND (MANAGER_NAME = 'Andrew Oh'
+            OR FIRST_LINE_MANAGER = 'Andrew Oh'
+            OR SECOND_LINE_MANAGER = 'Andrew Oh'
+            OR THIRD_LINE_MANAGER = 'Andrew Oh'
+            OR EMPLOYEE_NAME = 'Andrew Oh')
     """
     return run_query(query)
 
@@ -995,16 +996,43 @@ def apply_coco_filter(df):
         return df[df['COCO_USAGE'] == 'No'].reset_index(drop=True)
     return df
 
+def apply_key_feature_filter(df):
+    if not key_features or df.empty or 'KEY_FEATURES' not in df.columns:
+        return df
+    tagged_mask = pd.Series(False, index=df.index)
+    for kf in key_features:
+        tagged_mask = tagged_mask | df['KEY_FEATURES'].fillna('').str.contains(kf, case=False, na=False)
+    mapped_consumption_features = set()
+    for kf in key_features:
+        mapped_consumption_features.update(KEY_FEATURE_TO_CONSUMPTION.get(kf, []))
+    consumption_mask = pd.Series(False, index=df.index)
+    if mapped_consumption_features:
+        try:
+            consumption_df = get_de_consumption_by_account()
+            consumption_accounts = set()
+            for _, row in consumption_df.iterrows():
+                if row['FEATURE'] in mapped_consumption_features and row['TOTAL_CREDITS'] > 0:
+                    consumption_accounts.add(row['ACCOUNT_NAME_UPPER'])
+            if consumption_accounts:
+                consumption_mask = df['ACCOUNT_NAME'].fillna('').str.upper().isin(consumption_accounts)
+        except:
+            pass
+    combined = df[tagged_mask | consumption_mask].copy()
+    if not combined.empty:
+        combined['FEATURE_MATCH'] = 'Tagged'
+        combined.loc[~tagged_mask[combined.index] & consumption_mask[combined.index], 'FEATURE_MATCH'] = 'Consumption Only'
+    return combined.reset_index(drop=True)
+
 TAB_NAMES = ["Overall DE/DL Summary", "AFE All Engagements", "Weekly Key Updates", "Consumption Credits", "PSS-AFE Team Commentry", "Services Team Commentry"]
 active_tab = st.radio("", TAB_NAMES, horizontal=True, label_visibility="collapsed", key="active_tab")
 
-display_cols = ['ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'ENGINEER', 'MANAGER', 'KEY_FEATURES', 'CONSUMPTION_VALIDATED', 'FEATURE_CREDITS', 'COCO_USAGE', 'COCO_CLI_REQUESTS', 'COCO_TOTAL_REQUESTS', 'ENGAGEMENT_DRIVERS', 'SPECIALISTS', 'THEATER', 'GVP', 'SFDC']
+display_cols = ['ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'ENGINEER', 'MANAGER', 'KEY_FEATURES', 'FEATURE_MATCH', 'CONSUMPTION_VALIDATED', 'FEATURE_CREDITS', 'COCO_USAGE', 'COCO_CLI_REQUESTS', 'COCO_TOTAL_REQUESTS', 'ENGAGEMENT_DRIVERS', 'SPECIALISTS', 'THEATER', 'GVP', 'SFDC']
 
 if active_tab == "AFE All Engagements":
     st.subheader("All Engagements")
     with st.spinner('Loading all engagements...'):
-        query = build_afe_query(str(start_date), str(end_date), emp_filter, feature_filter, key_feat_filter, gvp_clause, theater_clause, stage_clause, won_only=False)
-        df_all = apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(query))))))
+        query = build_afe_query(str(start_date), str(end_date), emp_filter, feature_filter, "", gvp_clause, theater_clause, stage_clause, won_only=False)
+        df_all = apply_key_feature_filter(apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(query)))))))
     
     if not df_all.empty:
         df_all["SFDC"] = df_all["USE_CASE_ID"].apply(lambda uid: f"{SFDC_BASE}/{uid}/view" if uid else "")
@@ -1015,7 +1043,8 @@ if active_tab == "AFE All Engagements":
     st.markdown("---")
     
     if not df_all.empty:
-        df_all_display = df_all[display_cols].copy()
+        active_display_cols = [c for c in display_cols if c in df_all.columns]
+        df_all_display = df_all[active_display_cols].copy()
         df_all_display.insert(0, 'Select', False)
         
         edited_all = st.data_editor(
@@ -1026,6 +1055,7 @@ if active_tab == "AFE All Engagements":
                 "Select": st.column_config.CheckboxColumn("Select", default=False, width="small"),
                 "EACV": st.column_config.NumberColumn("EACV", format="$%.0f"),
                 "KEY_FEATURES": st.column_config.TextColumn("Key Features", width="medium"),
+                "FEATURE_MATCH": st.column_config.TextColumn("Match", width="small"),
                 "CONSUMPTION_VALIDATED": st.column_config.TextColumn("Validated", width="small"),
                 "FEATURE_CREDITS": st.column_config.NumberColumn("Feature Credits (60d)", format="%.1f"),
                 "COCO_USAGE": st.column_config.TextColumn("CoCo", width="small"),
@@ -1035,7 +1065,7 @@ if active_tab == "AFE All Engagements":
                 "SPECIALISTS": st.column_config.TextColumn("Specialists", width="medium"),
                 "SFDC": st.column_config.LinkColumn("SFDC", display_text=r".*/(.+)/view"),
             },
-            disabled=[c for c in display_cols],
+            disabled=[c for c in active_display_cols],
             hide_index=True,
             key="all_editor"
         )
@@ -1137,10 +1167,10 @@ if active_tab == "Overall DE/DL Summary":
         WHERE 1=1 {summary_stage_where}
           AND (UC.TECHNICAL_USE_CASE LIKE '%DE:%' OR UC.PRIORITIZED_FEATURES LIKE '%DE -%')
           AND (UC.DECISION_DATE BETWEEN '{start_date}' AND '{end_date}' OR UC.GO_LIVE_DATE BETWEEN '{start_date}' AND '{end_date}')
-          {feature_filter} {key_feat_filter} {gvp_clause} {theater_clause} {account_name_clause}
+          {feature_filter} {gvp_clause} {theater_clause} {account_name_clause}
         ORDER BY EACV DESC NULLS LAST
         """
-        df_summary = apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(summary_query))))))
+        df_summary = apply_key_feature_filter(apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(summary_query)))))))
     
     if not df_summary.empty:
         df_summary["SFDC"] = df_summary["USE_CASE_ID"].apply(lambda uid: f"{SFDC_BASE}/{uid}/view" if uid else "")
@@ -1174,8 +1204,9 @@ if active_tab == "Overall DE/DL Summary":
         st.plotly_chart(fig, use_container_width=True)
         
         st.markdown("### All DE/DL Use Cases")
-        summary_display_cols = ['STAGE_BUCKET', 'ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'KEY_FEATURES', 'CONSUMPTION_VALIDATED', 'FEATURE_CREDITS', 'COCO_USAGE', 'COCO_CLI_REQUESTS', 'COCO_TOTAL_REQUESTS', 'ENGAGEMENT_DRIVERS', 'SPECIALISTS', 'ENGINEER', 'SFDC']
-        df_summary_display = df_summary[summary_display_cols].copy()
+        summary_display_cols = ['STAGE_BUCKET', 'ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'KEY_FEATURES', 'FEATURE_MATCH', 'CONSUMPTION_VALIDATED', 'FEATURE_CREDITS', 'COCO_USAGE', 'COCO_CLI_REQUESTS', 'COCO_TOTAL_REQUESTS', 'ENGAGEMENT_DRIVERS', 'SPECIALISTS', 'ENGINEER', 'SFDC']
+        active_summary_cols = [c for c in summary_display_cols if c in df_summary.columns]
+        df_summary_display = df_summary[active_summary_cols].copy()
         df_summary_display.insert(0, 'Select', False)
         
         edited_summary = st.data_editor(
@@ -1186,6 +1217,7 @@ if active_tab == "Overall DE/DL Summary":
                 "Select": st.column_config.CheckboxColumn("Select", default=False, width="small"),
                 "STAGE_BUCKET": st.column_config.TextColumn("Stage Bucket"),
                 "EACV": st.column_config.NumberColumn("EACV", format="$%.0f"),
+                "FEATURE_MATCH": st.column_config.TextColumn("Match", width="small"),
                 "CONSUMPTION_VALIDATED": st.column_config.TextColumn("Validated", width="small"),
                 "FEATURE_CREDITS": st.column_config.NumberColumn("Feature Credits (60d)", format="%.1f"),
                 "COCO_USAGE": st.column_config.TextColumn("CoCo", width="small"),
@@ -1194,7 +1226,7 @@ if active_tab == "Overall DE/DL Summary":
                 "ENGAGEMENT_DRIVERS": st.column_config.TextColumn("Drivers", width="medium"),
                 "SFDC": st.column_config.LinkColumn("SFDC", display_text=r".*/(.+)/view"),
             },
-            disabled=[c for c in summary_display_cols],
+            disabled=[c for c in active_summary_cols],
             hide_index=True,
             key="summary_editor"
         )
@@ -1294,10 +1326,10 @@ if active_tab == "Weekly Key Updates":
           AND UC.PRIORITIZED_FEATURES ILIKE '%DE -%'
           AND (UC.DECISION_DATE BETWEEN '{start_date}' AND '{end_date}' OR UC.GO_LIVE_DATE BETWEEN '{start_date}' AND '{end_date}')
           AND UC.USE_CASE_EACV >= {min_acv_value}
-          {gvp_clause} {theater_clause} {key_feat_filter} {account_name_clause}
+          {gvp_clause} {theater_clause} {account_name_clause}
         ORDER BY UC.USE_CASE_EACV DESC NULLS LAST
         """
-        df_weekly = apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(weekly_query))))))
+        df_weekly = apply_key_feature_filter(apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(weekly_query)))))))
     
     if not df_weekly.empty:
         df_weekly["LAST_HISTORY_UPDATE_DATE"] = pd.to_datetime(df_weekly["LAST_HISTORY_UPDATE_DATE"], errors="coerce")
@@ -1343,7 +1375,7 @@ if active_tab == "Weekly Key Updates":
 
         df_weekly_filtered["SFDC"] = df_weekly_filtered["USE_CASE_ID"].apply(lambda uid: f"{SFDC_BASE}/{uid}/view" if uid else "")
 
-        grid_cols = ["ACCOUNT_NAME", "USE_CASE_NAME", "STAGE", "EACV", "STAGE_BUCKET", "ENGINEER", "KEY_FEATURES", "CONSUMPTION_VALIDATED", "FEATURE_CREDITS", "COCO_USAGE", "COCO_CLI_REQUESTS", "COCO_TOTAL_REQUESTS", "ENGAGEMENT_DRIVERS", "SPECIALISTS", "THEATER", "DECISION_DATE", "GO_LIVE_DATE", "LAST_HISTORY_UPDATE_DATE", "SFDC"]
+        grid_cols = ["ACCOUNT_NAME", "USE_CASE_NAME", "STAGE", "EACV", "STAGE_BUCKET", "ENGINEER", "KEY_FEATURES", "FEATURE_MATCH", "CONSUMPTION_VALIDATED", "FEATURE_CREDITS", "COCO_USAGE", "COCO_CLI_REQUESTS", "COCO_TOTAL_REQUESTS", "ENGAGEMENT_DRIVERS", "SPECIALISTS", "THEATER", "DECISION_DATE", "GO_LIVE_DATE", "LAST_HISTORY_UPDATE_DATE", "SFDC"]
         display_cols = [c for c in grid_cols if c in df_weekly_filtered.columns]
         weekly_display = df_weekly_filtered[display_cols].copy()
         weekly_display = weekly_display.sort_values("EACV", ascending=False).reset_index(drop=True)
@@ -1367,6 +1399,7 @@ if active_tab == "Weekly Key Updates":
                 "STAGE_BUCKET": st.column_config.TextColumn("Bucket"),
                 "ENGINEER": st.column_config.TextColumn("Engineer"),
                 "KEY_FEATURES": st.column_config.TextColumn("Key Features"),
+                "FEATURE_MATCH": st.column_config.TextColumn("Match"),
                 "CONSUMPTION_VALIDATED": st.column_config.TextColumn("Validated"),
                 "FEATURE_CREDITS": st.column_config.NumberColumn("Feature Credits (60d)", format="%.1f"),
                 "COCO_USAGE": st.column_config.TextColumn("CoCo", width="small"),
@@ -2400,7 +2433,7 @@ if active_tab == "Services Team Commentry":
             svc_styled_detail, hide_index=True, use_container_width=True, height=500,
             column_config={"SFDC": st.column_config.LinkColumn("SFDC", display_text=r".*/(.+)/view")},
         )
-        st.caption(f"Showing {len(svc_detail):,} use cases · Org: Ganesh Krishnamurthy · Source: MDM.MDM_INTERFACES.DIM_USE_CASE")
+        st.caption(f"Showing {len(svc_detail):,} use cases · Org: Andrew Oh · Source: MDM.MDM_INTERFACES.DIM_USE_CASE")
 
         st.markdown("---")
         st.subheader("AI Engagement Summary")
