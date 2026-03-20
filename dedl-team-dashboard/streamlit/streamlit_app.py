@@ -1424,65 +1424,70 @@ if active_tab == "Weekly Key Updates":
         comment_field_map = {"All Fields": None, "Specialist Comments": "SPECIALIST_COMMENTS", "SE Comments": "SE_COMMENTS", "Partner Comments": "PARTNER_COMMENTS", "Professional Services": "IMPLEMENTATION_COMMENTS"}
         active_comment_col = comment_field_map.get(selected_comment_type)
 
-        if st.button("🤖 AI Summary", key="weekly_ai_btn"):
-            if not selected_rows.empty:
-                ai_indices = selected_rows.index
-                ai_source_full = df_weekly_filtered.loc[ai_indices]
-            else:
-                ai_source_full = df_weekly_filtered
+        if not selected_rows.empty:
+            ai_indices = selected_rows.index
+            ai_source_full = df_weekly_filtered.loc[ai_indices]
+        else:
+            ai_source_full = df_weekly_filtered
 
+        if active_comment_col:
+            rows_with_comments = ai_source_full[ai_source_full[active_comment_col].fillna('').str.strip().ne('')]
+        else:
+            comment_cols = ['SE_COMMENTS', 'SPECIALIST_COMMENTS', 'IMPLEMENTATION_COMMENTS', 'PARTNER_COMMENTS', 'NEXT_STEPS']
+            rows_with_comments = ai_source_full[ai_source_full[comment_cols].apply(lambda r: r.str.strip().ne('').any(), axis=1)]
+        if rows_with_comments.empty:
+            rows_with_comments = ai_source_full
+        comments_sorted = rows_with_comments.sort_values("EACV", ascending=False)
+        max_uc = 30
+        comments_subset = comments_sorted.head(max_uc)
+        comment_lines = []
+        for _, row in comments_subset.iterrows():
             if active_comment_col:
-                rows_with_comments = ai_source_full[ai_source_full[active_comment_col].fillna('').str.strip().ne('')]
+                comment_text = str(row.get(active_comment_col, "") or "").strip()[:500]
+                consumption = str(row.get('CONSUMPTION_VALIDATED', '') or 'N/A')
+                coco = str(row.get('COCO_USAGE', '') or 'N/A')
+                coco_cli = row.get('COCO_CLI_REQUESTS', 0) or 0
+                comment_lines.append(
+                    f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | Stage: {row['STAGE']} | EACV: ${row['EACV']:,.0f} | Engineer: {row.get('ENGINEER','')} | Consumption: {consumption} | CoCo: {coco} (CLI: {coco_cli})\n"
+                    f"  {selected_comment_type}: {comment_text}"
+                )
             else:
-                comment_cols = ['SE_COMMENTS', 'SPECIALIST_COMMENTS', 'IMPLEMENTATION_COMMENTS', 'PARTNER_COMMENTS', 'NEXT_STEPS']
-                rows_with_comments = ai_source_full[ai_source_full[comment_cols].apply(lambda r: r.str.strip().ne('').any(), axis=1)]
-            if rows_with_comments.empty:
-                rows_with_comments = ai_source_full
-            comments_sorted = rows_with_comments.sort_values("EACV", ascending=False)
-            max_uc = 30
-            comments_subset = comments_sorted.head(max_uc)
-            comment_lines = []
-            for _, row in comments_subset.iterrows():
-                if active_comment_col:
-                    comment_text = str(row.get(active_comment_col, "") or "").strip()[:500]
-                    consumption = str(row.get('CONSUMPTION_VALIDATED', '') or 'N/A')
-                    coco = str(row.get('COCO_USAGE', '') or 'N/A')
-                    coco_cli = row.get('COCO_CLI_REQUESTS', 0) or 0
-                    comment_lines.append(
-                        f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | Stage: {row['STAGE']} | EACV: ${row['EACV']:,.0f} | Engineer: {row.get('ENGINEER','')} | Consumption: {consumption} | CoCo: {coco} (CLI: {coco_cli})\n"
-                        f"  {selected_comment_type}: {comment_text}"
-                    )
-                else:
-                    se = str(row.get("SE_COMMENTS", "") or "").strip()[:300]
-                    spec = str(row.get("SPECIALIST_COMMENTS", "") or "").strip()[:300]
-                    impl = str(row.get("IMPLEMENTATION_COMMENTS", "") or "").strip()[:300]
-                    ns = str(row.get("NEXT_STEPS", "") or "").strip()[:300]
-                    consumption = str(row.get('CONSUMPTION_VALIDATED', '') or 'N/A')
-                    coco = str(row.get('COCO_USAGE', '') or 'N/A')
-                    coco_cli = row.get('COCO_CLI_REQUESTS', 0) or 0
-                    comment_lines.append(
-                        f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | Stage: {row['STAGE']} | EACV: ${row['EACV']:,.0f} | Engineer: {row.get('ENGINEER','')} | Consumption: {consumption} | CoCo: {coco} (CLI: {coco_cli})\n"
-                        f"  SE: {se}\n  Specialist: {spec}\n  Implementation: {impl}\n  Next Steps: {ns}"
-                    )
-            comments_block = "\n".join(comment_lines)
-            feat_label = ", ".join(selected_weekly_key_features) if selected_weekly_key_features else "All DE Features"
-            scope_label = f"{len(ai_source_full)} selected" if not selected_rows.empty else "all filtered"
-            comment_scope = f" (focused on {selected_comment_type})" if active_comment_col else ""
-            ai_prompt = (
-                f"You are a DE/DL team analyst. Analyze these {feat_label} use cases ({scope_label} use cases){comment_scope}.\n\n"
-                f"There are {len(rows_with_comments)} use cases with comments (out of {len(ai_source_full)} total).\n"
-                f"Consumption Validated: {len(ai_source_full[ai_source_full.get('CONSUMPTION_VALIDATED', pd.Series(dtype=str)).eq('Yes')]) if 'CONSUMPTION_VALIDATED' in ai_source_full.columns else 'N/A'} accounts | "
-                f"CoCo Users: {len(ai_source_full[ai_source_full.get('COCO_USAGE', pd.Series(dtype=str)).eq('Yes')]) if 'COCO_USAGE' in ai_source_full.columns else 'N/A'} accounts\n\n"
-                f"USE CASE DATA:\n{comments_block}\n\n"
-                "Provide a structured summary with these sections:\n"
-                "1. **What's Working** — Positive themes, successful patterns, products gaining traction.\n"
-                "2. **Key Risks / Blockers** — Concerns, delays, blockers, at-risk engagements.\n"
-                "3. **Next Action Items** — Specific recommended next steps. Reference account names.\n\n"
-                "IMPORTANT: Always include EACV dollar amounts when referencing accounts.\n"
-                "Be concise, data-driven, and reference specific accounts. Format with markdown."
-            )
+                se = str(row.get("SE_COMMENTS", "") or "").strip()[:300]
+                spec = str(row.get("SPECIALIST_COMMENTS", "") or "").strip()[:300]
+                impl = str(row.get("IMPLEMENTATION_COMMENTS", "") or "").strip()[:300]
+                ns = str(row.get("NEXT_STEPS", "") or "").strip()[:300]
+                consumption = str(row.get('CONSUMPTION_VALIDATED', '') or 'N/A')
+                coco = str(row.get('COCO_USAGE', '') or 'N/A')
+                coco_cli = row.get('COCO_CLI_REQUESTS', 0) or 0
+                comment_lines.append(
+                    f"- **{row['ACCOUNT_NAME']}** | {row['USE_CASE_NAME']} | Stage: {row['STAGE']} | EACV: ${row['EACV']:,.0f} | Engineer: {row.get('ENGINEER','')} | Consumption: {consumption} | CoCo: {coco} (CLI: {coco_cli})\n"
+                    f"  SE: {se}\n  Specialist: {spec}\n  Implementation: {impl}\n  Next Steps: {ns}"
+                )
+        comments_block = "\n".join(comment_lines)
+        feat_label = ", ".join(selected_weekly_key_features) if selected_weekly_key_features else "All DE Features"
+        scope_label = f"{len(ai_source_full)} selected" if not selected_rows.empty else "all filtered"
+        comment_scope = f" (focused on {selected_comment_type})" if active_comment_col else ""
+        default_prompt = (
+            f"You are a DE/DL team analyst. Analyze these {feat_label} use cases ({scope_label} use cases){comment_scope}.\n\n"
+            f"There are {len(rows_with_comments)} use cases with comments (out of {len(ai_source_full)} total).\n"
+            f"Consumption Validated: {len(ai_source_full[ai_source_full.get('CONSUMPTION_VALIDATED', pd.Series(dtype=str)).eq('Yes')]) if 'CONSUMPTION_VALIDATED' in ai_source_full.columns else 'N/A'} accounts | "
+            f"CoCo Users: {len(ai_source_full[ai_source_full.get('COCO_USAGE', pd.Series(dtype=str)).eq('Yes')]) if 'COCO_USAGE' in ai_source_full.columns else 'N/A'} accounts\n\n"
+            f"USE CASE DATA:\n{comments_block}\n\n"
+            "Provide a structured summary with these sections:\n"
+            "1. **What's Working** — Positive themes, successful patterns, products gaining traction.\n"
+            "2. **Key Risks / Blockers** — Concerns, delays, blockers, at-risk engagements.\n"
+            "3. **Next Action Items** — Specific recommended next steps. Reference account names.\n\n"
+            "IMPORTANT: Always include EACV dollar amounts when referencing accounts.\n"
+            "Be concise, data-driven, and reference specific accounts. Format with markdown."
+        )
+
+        with st.expander("Edit AI Prompt", expanded=False):
+            edited_prompt = st.text_area("Prompt", value=default_prompt, height=300, key="weekly_ai_prompt_editor")
+
+        if st.button("🤖 AI Summary", key="weekly_ai_btn"):
+            final_prompt = edited_prompt if edited_prompt.strip() else default_prompt
             with st.spinner(f"Analyzing {feat_label} ({scope_label}) with Cortex AI..."):
-                ai_result = generate_ai_summary(ai_prompt)
+                ai_result = generate_ai_summary(final_prompt)
             st.session_state['weekly_ai_result'] = ai_result
 
         if isinstance(st.session_state.get('weekly_ai_result'), str):
