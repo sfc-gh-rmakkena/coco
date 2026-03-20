@@ -135,11 +135,29 @@ def get_coco_usage_by_account():
     """
     return run_query(query)
 
+@st.cache_data(ttl=600, show_spinner=False)
+def get_coco_bundled_skills():
+    query = """
+    SELECT
+        UPPER(SALESFORCE_ACCOUNT_NAME) AS ACCOUNT_NAME_UPPER,
+        LISTAGG(DISTINCT f.value::STRING, ', ') WITHIN GROUP (ORDER BY f.value::STRING) AS BUNDLED_SKILLS
+    FROM SNOWSCIENCE.LLM.CORTEX_CODE_CLI_REQUEST_FACT,
+         LATERAL FLATTEN(input => PARSE_JSON(SKILL_CHOICE)) f
+    WHERE SNOWFLAKE_ACCOUNT_TYPE = 'Customer'
+      AND DS >= DATEADD('day', -90, CURRENT_DATE())
+      AND SKILL_CHOICE IS NOT NULL
+      AND SKILL_CHOICE != ''
+      AND SALESFORCE_ACCOUNT_NAME IS NOT NULL
+    GROUP BY UPPER(SALESFORCE_ACCOUNT_NAME)
+    """
+    return run_query(query)
+
 def add_coco_usage(df):
     if df.empty or 'ACCOUNT_NAME' not in df.columns:
         df['COCO_USAGE'] = ''
         df['COCO_CLI_REQUESTS'] = 0
         df['COCO_TOTAL_REQUESTS'] = 0
+        df['COCO_BUNDLED_SKILLS'] = ''
         return df
     try:
         coco_df = get_coco_usage_by_account()
@@ -147,6 +165,7 @@ def add_coco_usage(df):
         df['COCO_USAGE'] = 'Unknown'
         df['COCO_CLI_REQUESTS'] = 0
         df['COCO_TOTAL_REQUESTS'] = 0
+        df['COCO_BUNDLED_SKILLS'] = ''
         return df
     coco_lookup = {}
     for _, row in coco_df.iterrows():
@@ -155,9 +174,15 @@ def add_coco_usage(df):
             coco_lookup[acct] = {'cli': 0, 'total': 0}
         coco_lookup[acct]['cli'] += int(row.get('CLI_REQUEST_COUNT', 0) or 0)
         coco_lookup[acct]['total'] += int(row.get('TOTAL_REQUEST_COUNT', 0) or 0)
+    try:
+        skills_df = get_coco_bundled_skills()
+        skills_lookup = dict(zip(skills_df['ACCOUNT_NAME_UPPER'], skills_df['BUNDLED_SKILLS']))
+    except:
+        skills_lookup = {}
     usage_list = []
     cli_list = []
     total_list = []
+    skills_list = []
     for _, row in df.iterrows():
         acct_upper = str(row['ACCOUNT_NAME']).upper()
         acct_data = coco_lookup.get(acct_upper, None)
@@ -169,9 +194,11 @@ def add_coco_usage(df):
             usage_list.append('No')
             cli_list.append(0)
             total_list.append(0)
+        skills_list.append(skills_lookup.get(acct_upper, ''))
     df['COCO_USAGE'] = usage_list
     df['COCO_CLI_REQUESTS'] = cli_list
     df['COCO_TOTAL_REQUESTS'] = total_list
+    df['COCO_BUNDLED_SKILLS'] = skills_list
     return df
 
 def add_consumption_validation(df):
@@ -949,6 +976,15 @@ account_name_search = st.sidebar.text_input("Account Name", value="", key="accou
 min_acv = st.sidebar.number_input("Min EACV ($)", min_value=0, value=1, step=1, key="min_acv_filter")
 consumption_validated_filter = st.sidebar.selectbox("Consumption Validated", ["All", "Yes", "No"], index=0, key="consumption_validated_filter", help="Filter use cases by whether the account has actual DE consumption (last 60 days) matching tagged Key Features.")
 coco_usage_filter = st.sidebar.selectbox("CoCo Usage", ["All", "Yes", "No"], index=0, key="coco_usage_filter", help="Filter use cases by whether the account has Cortex Code (CoCo) CLI/UI usage.")
+try:
+    all_skills_df = get_coco_bundled_skills()
+    all_skills_set = set()
+    for s in all_skills_df['BUNDLED_SKILLS'].dropna():
+        all_skills_set.update([x.strip() for x in s.split(',') if x.strip()])
+    all_skills_sorted = sorted(all_skills_set)
+except:
+    all_skills_sorted = []
+coco_skills_filter = st.sidebar.multiselect("CoCo Bundled Skills", all_skills_sorted, default=[], key="coco_skills_filter", help="Filter accounts using specific CoCo bundled skills (last 90 days).")
 
 
 emp_filter = ""
@@ -996,6 +1032,14 @@ def apply_coco_filter(df):
         return df[df['COCO_USAGE'] == 'No'].reset_index(drop=True)
     return df
 
+def apply_coco_skills_filter(df):
+    if not coco_skills_filter or df.empty or 'COCO_BUNDLED_SKILLS' not in df.columns:
+        return df
+    mask = pd.Series(False, index=df.index)
+    for skill in coco_skills_filter:
+        mask = mask | df['COCO_BUNDLED_SKILLS'].fillna('').str.contains(skill, case=False, na=False)
+    return df[mask].reset_index(drop=True)
+
 def apply_key_feature_filter(df):
     if not key_features or df.empty or 'KEY_FEATURES' not in df.columns:
         return df
@@ -1026,13 +1070,13 @@ def apply_key_feature_filter(df):
 TAB_NAMES = ["Overall DE/DL Summary", "AFE All Engagements", "Weekly Key Updates", "Consumption Credits", "PSS-AFE Team Commentry", "Services Team Commentry"]
 active_tab = st.radio("", TAB_NAMES, horizontal=True, label_visibility="collapsed", key="active_tab")
 
-display_cols = ['ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'ENGINEER', 'MANAGER', 'KEY_FEATURES', 'FEATURE_MATCH', 'CONSUMPTION_VALIDATED', 'FEATURE_CREDITS', 'COCO_USAGE', 'COCO_CLI_REQUESTS', 'COCO_TOTAL_REQUESTS', 'ENGAGEMENT_DRIVERS', 'SPECIALISTS', 'THEATER', 'GVP', 'SFDC']
+display_cols = ['ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'ENGINEER', 'MANAGER', 'KEY_FEATURES', 'FEATURE_MATCH', 'CONSUMPTION_VALIDATED', 'FEATURE_CREDITS', 'COCO_USAGE', 'COCO_CLI_REQUESTS', 'COCO_TOTAL_REQUESTS', 'COCO_BUNDLED_SKILLS', 'ENGAGEMENT_DRIVERS', 'SPECIALISTS', 'THEATER', 'GVP', 'SFDC']
 
 if active_tab == "AFE All Engagements":
     st.subheader("All Engagements")
     with st.spinner('Loading all engagements...'):
         query = build_afe_query(str(start_date), str(end_date), emp_filter, feature_filter, "", gvp_clause, theater_clause, stage_clause, won_only=False)
-        df_all = apply_key_feature_filter(apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(query)))))))
+        df_all = apply_coco_skills_filter(apply_key_feature_filter(apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(query))))))))
     
     if not df_all.empty:
         df_all["SFDC"] = df_all["USE_CASE_ID"].apply(lambda uid: f"{SFDC_BASE}/{uid}/view" if uid else "")
@@ -1061,6 +1105,7 @@ if active_tab == "AFE All Engagements":
                 "COCO_USAGE": st.column_config.TextColumn("CoCo", width="small"),
                 "COCO_CLI_REQUESTS": st.column_config.NumberColumn("CoCo CLI Reqs"),
                 "COCO_TOTAL_REQUESTS": st.column_config.NumberColumn("CoCo Total Reqs"),
+                "COCO_BUNDLED_SKILLS": st.column_config.TextColumn("CoCo Skills", width="medium"),
                 "ENGAGEMENT_DRIVERS": st.column_config.TextColumn("Drivers", width="medium"),
                 "SPECIALISTS": st.column_config.TextColumn("Specialists", width="medium"),
                 "SFDC": st.column_config.LinkColumn("SFDC", display_text=r".*/(.+)/view"),
@@ -1170,7 +1215,7 @@ if active_tab == "Overall DE/DL Summary":
           {feature_filter} {gvp_clause} {theater_clause} {account_name_clause}
         ORDER BY EACV DESC NULLS LAST
         """
-        df_summary = apply_key_feature_filter(apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(summary_query)))))))
+        df_summary = apply_coco_skills_filter(apply_key_feature_filter(apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(summary_query))))))))
     
     if not df_summary.empty:
         df_summary["SFDC"] = df_summary["USE_CASE_ID"].apply(lambda uid: f"{SFDC_BASE}/{uid}/view" if uid else "")
@@ -1204,7 +1249,7 @@ if active_tab == "Overall DE/DL Summary":
         st.plotly_chart(fig, use_container_width=True)
         
         st.markdown("### All DE/DL Use Cases")
-        summary_display_cols = ['STAGE_BUCKET', 'ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'KEY_FEATURES', 'FEATURE_MATCH', 'CONSUMPTION_VALIDATED', 'FEATURE_CREDITS', 'COCO_USAGE', 'COCO_CLI_REQUESTS', 'COCO_TOTAL_REQUESTS', 'ENGAGEMENT_DRIVERS', 'SPECIALISTS', 'ENGINEER', 'SFDC']
+        summary_display_cols = ['STAGE_BUCKET', 'ACCOUNT_NAME', 'ACCOUNT_OWNER', 'EACV', 'STAGE', 'USE_CASE_NAME', 'KEY_FEATURES', 'FEATURE_MATCH', 'CONSUMPTION_VALIDATED', 'FEATURE_CREDITS', 'COCO_USAGE', 'COCO_CLI_REQUESTS', 'COCO_TOTAL_REQUESTS', 'COCO_BUNDLED_SKILLS', 'ENGAGEMENT_DRIVERS', 'SPECIALISTS', 'ENGINEER', 'SFDC']
         active_summary_cols = [c for c in summary_display_cols if c in df_summary.columns]
         df_summary_display = df_summary[active_summary_cols].copy()
         df_summary_display.insert(0, 'Select', False)
@@ -1329,7 +1374,7 @@ if active_tab == "Weekly Key Updates":
           {gvp_clause} {theater_clause} {account_name_clause}
         ORDER BY UC.USE_CASE_EACV DESC NULLS LAST
         """
-        df_weekly = apply_key_feature_filter(apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(weekly_query)))))))
+        df_weekly = apply_coco_skills_filter(apply_key_feature_filter(apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(weekly_query))))))))
     
     if not df_weekly.empty:
         df_weekly["LAST_HISTORY_UPDATE_DATE"] = pd.to_datetime(df_weekly["LAST_HISTORY_UPDATE_DATE"], errors="coerce")
@@ -1375,7 +1420,7 @@ if active_tab == "Weekly Key Updates":
 
         df_weekly_filtered["SFDC"] = df_weekly_filtered["USE_CASE_ID"].apply(lambda uid: f"{SFDC_BASE}/{uid}/view" if uid else "")
 
-        grid_cols = ["ACCOUNT_NAME", "USE_CASE_NAME", "STAGE", "EACV", "STAGE_BUCKET", "ENGINEER", "KEY_FEATURES", "FEATURE_MATCH", "CONSUMPTION_VALIDATED", "FEATURE_CREDITS", "COCO_USAGE", "COCO_CLI_REQUESTS", "COCO_TOTAL_REQUESTS", "ENGAGEMENT_DRIVERS", "SPECIALISTS", "THEATER", "DECISION_DATE", "GO_LIVE_DATE", "LAST_HISTORY_UPDATE_DATE", "SFDC"]
+        grid_cols = ["ACCOUNT_NAME", "USE_CASE_NAME", "STAGE", "EACV", "STAGE_BUCKET", "ENGINEER", "KEY_FEATURES", "FEATURE_MATCH", "CONSUMPTION_VALIDATED", "FEATURE_CREDITS", "COCO_USAGE", "COCO_CLI_REQUESTS", "COCO_TOTAL_REQUESTS", "COCO_BUNDLED_SKILLS", "ENGAGEMENT_DRIVERS", "SPECIALISTS", "THEATER", "DECISION_DATE", "GO_LIVE_DATE", "LAST_HISTORY_UPDATE_DATE", "SFDC"]
         display_cols = [c for c in grid_cols if c in df_weekly_filtered.columns]
         weekly_display = df_weekly_filtered[display_cols].copy()
         weekly_display = weekly_display.sort_values("EACV", ascending=False).reset_index(drop=True)
@@ -1405,6 +1450,7 @@ if active_tab == "Weekly Key Updates":
                 "COCO_USAGE": st.column_config.TextColumn("CoCo", width="small"),
                 "COCO_CLI_REQUESTS": st.column_config.NumberColumn("CoCo CLI Reqs"),
                 "COCO_TOTAL_REQUESTS": st.column_config.NumberColumn("CoCo Total Reqs"),
+                "COCO_BUNDLED_SKILLS": st.column_config.TextColumn("CoCo Skills", width="medium"),
                 "ENGAGEMENT_DRIVERS": st.column_config.TextColumn("Drivers"),
                 "SPECIALISTS": st.column_config.TextColumn("Specialists"),
                 "THEATER": st.column_config.TextColumn("Theater"),
@@ -1729,7 +1775,7 @@ if active_tab == "PSS-AFE Team Commentry":
     combined_data = add_consumption_validation(combined_data)
     combined_data = apply_consumption_filter(combined_data)
     combined_data = add_coco_usage(combined_data)
-    combined_data = apply_coco_filter(combined_data)
+    combined_data = apply_coco_skills_filter(apply_coco_filter(combined_data))
     cutoff_7d = date.today() - timedelta(days=7)
     cutoff_14d = date.today() - timedelta(days=14)
     today_dt = date.today()
@@ -1984,10 +2030,12 @@ if active_tab == "PSS-AFE Team Commentry":
     detail["Engagement"] = detail.apply(uc_engagement, axis=1)
     detail = detail.reset_index(drop=True)
 
-    detail_display = detail[["SPECIALIST", "ENGINEER", "ACCOUNT_NAME", "USE_CASE_NAME", "USE_CASE_STAGE", "USE_CASE_STATUS", "USE_CASE_EACV", "ENGAGEMENT_DRIVERS", "SPECIALISTS", "THEATER_NAME", "PRODUCT_CATEGORIES", "Engagement", "DECISION_DATE", "GO_LIVE_DATE", "LAST_MODIFIED_DATE", "SFDC"]].rename(columns={
+    pss_detail_cols = ["SPECIALIST", "ENGINEER", "ACCOUNT_NAME", "USE_CASE_NAME", "USE_CASE_STAGE", "USE_CASE_STATUS", "USE_CASE_EACV", "COCO_BUNDLED_SKILLS", "ENGAGEMENT_DRIVERS", "SPECIALISTS", "THEATER_NAME", "PRODUCT_CATEGORIES", "Engagement", "DECISION_DATE", "GO_LIVE_DATE", "LAST_MODIFIED_DATE", "SFDC"]
+    active_pss_cols = [c for c in pss_detail_cols if c in detail.columns]
+    detail_display = detail[active_pss_cols].rename(columns={
         "SPECIALIST": "AFE", "ACCOUNT_NAME": "Account", "USE_CASE_NAME": "Use Case",
         "USE_CASE_STAGE": "Stage", "USE_CASE_STATUS": "Status", "USE_CASE_EACV": "EACV",
-        "ENGAGEMENT_DRIVERS": "Drivers", "SPECIALISTS": "Specialists", "THEATER_NAME": "Theater", "PRODUCT_CATEGORIES": "Products",
+        "COCO_BUNDLED_SKILLS": "CoCo Skills", "ENGAGEMENT_DRIVERS": "Drivers", "SPECIALISTS": "Specialists", "THEATER_NAME": "Theater", "PRODUCT_CATEGORIES": "Products",
         "LAST_MODIFIED_DATE": "Last Modified", "DECISION_DATE": "Decision Date", "GO_LIVE_DATE": "Go Live Date",
     })
 
@@ -2163,7 +2211,7 @@ if active_tab == "Services Team Commentry":
     svc_combined_data = add_consumption_validation(svc_combined_data)
     svc_combined_data = apply_consumption_filter(svc_combined_data)
     svc_combined_data = add_coco_usage(svc_combined_data)
-    svc_combined_data = apply_coco_filter(svc_combined_data)
+    svc_combined_data = apply_coco_skills_filter(apply_coco_filter(svc_combined_data))
 
     if svc_driver_filter and not svc_combined_data.empty and 'ENGAGEMENT_DRIVERS' in svc_combined_data.columns:
         svc_drv_mask = pd.Series(False, index=svc_combined_data.index)
@@ -2414,10 +2462,12 @@ if active_tab == "Services Team Commentry":
         svc_detail["Engagement"] = svc_detail.apply(svc_uc_engagement, axis=1)
         svc_detail = svc_detail.reset_index(drop=True)
 
-        svc_detail_display = svc_detail[["SPECIALIST", "ENGINEER", "ACCOUNT_NAME", "USE_CASE_NAME", "USE_CASE_STAGE", "USE_CASE_STATUS", "USE_CASE_EACV", "ENGAGEMENT_DRIVERS", "SPECIALISTS", "THEATER_NAME", "PRODUCT_CATEGORIES", "Engagement", "DECISION_DATE", "GO_LIVE_DATE", "LAST_MODIFIED_DATE", "SFDC"]].rename(columns={
+        svc_detail_cols = ["SPECIALIST", "ENGINEER", "ACCOUNT_NAME", "USE_CASE_NAME", "USE_CASE_STAGE", "USE_CASE_STATUS", "USE_CASE_EACV", "COCO_BUNDLED_SKILLS", "ENGAGEMENT_DRIVERS", "SPECIALISTS", "THEATER_NAME", "PRODUCT_CATEGORIES", "Engagement", "DECISION_DATE", "GO_LIVE_DATE", "LAST_MODIFIED_DATE", "SFDC"]
+        active_svc_cols = [c for c in svc_detail_cols if c in svc_detail.columns]
+        svc_detail_display = svc_detail[active_svc_cols].rename(columns={
             "SPECIALIST": "SDM", "ACCOUNT_NAME": "Account", "USE_CASE_NAME": "Use Case",
             "USE_CASE_STAGE": "Stage", "USE_CASE_STATUS": "Status", "USE_CASE_EACV": "EACV",
-            "ENGAGEMENT_DRIVERS": "Drivers", "SPECIALISTS": "Specialists", "THEATER_NAME": "Theater", "PRODUCT_CATEGORIES": "Products",
+            "COCO_BUNDLED_SKILLS": "CoCo Skills", "ENGAGEMENT_DRIVERS": "Drivers", "SPECIALISTS": "Specialists", "THEATER_NAME": "Theater", "PRODUCT_CATEGORIES": "Products",
             "LAST_MODIFIED_DATE": "Last Modified", "DECISION_DATE": "Decision Date", "GO_LIVE_DATE": "Go Live Date",
         })
 
