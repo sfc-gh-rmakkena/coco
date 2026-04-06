@@ -579,7 +579,7 @@ def generate_ai_summary(prompt):
     try:
         conn = get_connection()
         escaped_prompt = prompt.replace("'", "''")
-        query = f"SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-3-5-sonnet', '{escaped_prompt}') as summary"
+        query = f"SELECT SNOWFLAKE.CORTEX.COMPLETE('claude-3-7-sonnet', '{escaped_prompt}') as summary"
         if hasattr(conn, 'sql'):
             return conn.sql(query).to_pandas()['SUMMARY'].iloc[0]
         else:
