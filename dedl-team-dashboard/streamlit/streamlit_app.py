@@ -29,12 +29,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 ENGINEER_LIST = {
-    "Rithesh Makkena": ["Anika Shahi", "Chandra Nayak", "Chris Atkinson", "Chris Cardillo", "Kelsey Hammock", "Kesav Rayaprolu", "Nagesh Cherukuri", "Naveen Alan Thomas", "Niels ter Keurs", "Prash Medirattaa", "Randy Pettus", "Rithesh Makkena", "Sam Mittal", "Shawn Namdar", "Varun Kumar", "Venkat Suru", "Venkatesh Sekar"],
-    "Puneet Lakhanpal": ["Chinmayee Lakkad", "Dharmendra Shavkani", "Gayatri Ghanakota", "Hanbing Yan", "Jason Ho", "Jonathan Sierra", "Jonathan Tao", "Kiran Kumar Earalli", "Manrique Vargas", "Nirav Shah", "Pallavi Sharma", "Phani Raj", "Prathamesh Nimkar", "Priya Joseph", "Puneet Lakhanpal", "Rahul Reddy", "Ravi Kumar", "Ripu Jain", "Rogerio Rizzio", "Sam Gupta", "Santosh Ubale", "Su Dogra", "Tom Manfredi"],
-    "David Hare": ["David Hare", "Jason Hughes", "Jeremiah Hansen", "Jon Bennett", "Keith Gaputis", "Marc Henderson", "Marcin Kulakowski", "Parag Jain", "Sean Petrie", "Shantanu Gope", "Sharvan Kumar"],
-    "Brendan Tisseur": ["Brendan Tisseur", "Prasad Revalkar", "Ryan Templeton", "Salar Rowhani", "Summiya Khalid", "Venkat Medida"],
-    "Zahir Gadiwan": ["Ali Khosro", "Andries Engelbrecht", "Eric Tolotti", "James Sun", "Matt Marzillo", "Zahir Gadiwan"],
-    "Gopal Raghavan": ["Akash Bhatt", "Anthony Alteirac", "Dave Freriks", "David Richert", "Gopal Raghavan", "Mayur Mahadeshwar"]
+    "David Hare": ["David Hare", "Alex Feng", "Jon Bennett", "Marc Henderson", "Shantanu Gope", "Sharvan Kumar"],
+    "Brendan Tisseur": ["Brendan Tisseur", "Charlie Hammond", "Michael Goodman", "Paulo Lima", "Prasad Revalkar", "Ryan Templeton", "Salar Rowhani", "Subhajit Basu", "Summiya Khalid", "Venkat Medida", "Yogeswar Reddy Reddammagari"],
+    "Grant Liu": ["Grant Liu", "Jason Hughes", "Jeremiah Hansen", "Kala Govindarajan", "Keith Gaputis", "Nagesh Cherukuri", "Parag Jain", "Sean Petrie"]
 }
 
 @st.cache_resource
@@ -496,9 +493,8 @@ def get_dedl_attribution_cte(emp_filter=""):
         FROM SALES.SE_REPORTING.USE_CASE_ATTRIBUTION AS UCA
         LEFT JOIN SALES.SE_REPORTING.SE_ORG_HIERARCHY_VW AS ORG ON UCA.USER_ID = ORG.SE_ID
         WHERE UCA.SE_GROUP = 'Partner SE'
-          AND (ORG.FIRST_LINE_MANAGER IN ('Puneet Lakhanpal', 'Sam Mittal', 'David Hare', 'Brendan Tisseur', 'Zahir Gadiwan', 'Gopal Raghavan')
-              OR ORG.SECOND_LINE_MANAGER IN ('Puneet Lakhanpal', 'Sam Mittal', 'David Hare', 'Brendan Tisseur', 'Zahir Gadiwan')
-              OR ORG.THIRD_LINE_MANAGER = 'Rithesh Makkena')
+          AND (ORG.FIRST_LINE_MANAGER IN ('David Hare', 'Brendan Tisseur', 'Grant Liu')
+              OR ORG.EMPLOYEE_NAME IN ('David Hare', 'Brendan Tisseur', 'Grant Liu'))
         {emp_filter}
     )"""
 
@@ -686,9 +682,9 @@ def load_afe_org():
         FROM SALES.SE_REPORTING.SE_ORG_HIERARCHY_VW
         WHERE IS_ACTIVE = TRUE
           AND (
-            EMPLOYEE_NAME IN ('David Hare', 'Brendan Tisseur', 'Nagesh Cherukuri')
-            OR MANAGER_NAME IN ('David Hare', 'Brendan Tisseur')
-            OR FIRST_LINE_MANAGER IN ('David Hare', 'Brendan Tisseur')
+            EMPLOYEE_NAME IN ('David Hare', 'Brendan Tisseur', 'Grant Liu', 'Nagesh Cherukuri')
+            OR MANAGER_NAME IN ('David Hare', 'Brendan Tisseur', 'Grant Liu')
+            OR FIRST_LINE_MANAGER IN ('David Hare', 'Brendan Tisseur', 'Grant Liu')
           )
     """
     return run_query(query)
@@ -953,7 +949,7 @@ end_date = st.sidebar.date_input("End Date", prev_q_end)
 
 driver_filter = st.sidebar.multiselect("Engagement Driver", ["AFE", "Platform Specialist", "Partner", "Services", "Industry"])
 
-manager_options = ["Rithesh Makkena", "Puneet Lakhanpal", "David Hare", "Brendan Tisseur", "Zahir Gadiwan", "Gopal Raghavan"]
+manager_options = ["David Hare", "Brendan Tisseur", "Grant Liu"]
 manager_filter = st.sidebar.multiselect("Manager", manager_options)
 
 all_engineers = sorted(set([e for engineers in ENGINEER_LIST.values() for e in engineers]))
@@ -1377,8 +1373,8 @@ if active_tab == "Weekly Key Updates":
         df_weekly = apply_coco_skills_filter(apply_key_feature_filter(apply_coco_filter(add_coco_usage(apply_consumption_filter(add_consumption_validation(apply_driver_filter(run_query(weekly_query))))))))
     
     if not df_weekly.empty:
-        df_weekly["LAST_HISTORY_UPDATE_DATE"] = pd.to_datetime(df_weekly["LAST_HISTORY_UPDATE_DATE"], errors="coerce")
-        cutoff_date = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=last_n_history_days)
+        df_weekly["LAST_HISTORY_UPDATE_DATE"] = pd.to_datetime(df_weekly["LAST_HISTORY_UPDATE_DATE"], errors="coerce", utc=True).dt.tz_convert(None)
+        cutoff_date = pd.Timestamp.now() - pd.Timedelta(days=last_n_history_days)
         df_weekly = df_weekly[df_weekly["LAST_HISTORY_UPDATE_DATE"].notna() & (df_weekly["LAST_HISTORY_UPDATE_DATE"] >= cutoff_date)].reset_index(drop=True)
     if not df_weekly.empty:
         stage_buckets = ['Stage 1-3', 'Stage 4-5', 'Stage 6-7']
@@ -1802,30 +1798,34 @@ if active_tab == "PSS-AFE Team Commentry":
         )
         expanded = expanded[kf_mask].reset_index(drop=True)
 
-    expanded["LAST_MODIFIED_DATE_DT"] = pd.to_datetime(expanded["LAST_MODIFIED_DATE"], errors="coerce")
-    expanded["LAST_SPECIALIST_COMMENT_DATE_DT"] = pd.to_datetime(expanded["LAST_SPECIALIST_COMMENT_DATE"], errors="coerce")
-    expanded["DECISION_DATE_DT"] = pd.to_datetime(expanded["DECISION_DATE"], errors="coerce").dt.date
-    expanded["GO_LIVE_DATE_DT"] = pd.to_datetime(expanded["GO_LIVE_DATE"], errors="coerce").dt.date
+    expanded["LAST_MODIFIED_DATE_DT"] = pd.to_datetime(expanded["LAST_MODIFIED_DATE"], errors="coerce", utc=True).dt.tz_convert(None)
+    expanded["LAST_SPECIALIST_COMMENT_DATE_DT"] = pd.to_datetime(expanded["LAST_SPECIALIST_COMMENT_DATE"], errors="coerce", utc=True).dt.tz_convert(None)
+    expanded["DECISION_DATE_DT"] = pd.to_datetime(expanded["DECISION_DATE"], errors="coerce", utc=True).dt.tz_convert(None)
+    expanded["GO_LIVE_DATE_DT"] = pd.to_datetime(expanded["GO_LIVE_DATE"], errors="coerce", utc=True).dt.tz_convert(None)
     expanded["HAS_SPECIALIST_COMMENTS"] = expanded["HAS_SPECIALIST_COMMENTS"].astype(bool)
 
+    cq_start_ts = pd.Timestamp(cq_start)
+    cq_end_ts = pd.Timestamp(cq_end)
+    nq_start_ts = pd.Timestamp(nq_start)
+    nq_end_ts = pd.Timestamp(nq_end)
     expanded["IN_CQ"] = (
-        ((expanded["DECISION_DATE_DT"] >= cq_start) & (expanded["DECISION_DATE_DT"] <= cq_end))
-        | ((expanded["GO_LIVE_DATE_DT"] >= cq_start) & (expanded["GO_LIVE_DATE_DT"] <= cq_end))
+        ((expanded["DECISION_DATE_DT"] >= cq_start_ts) & (expanded["DECISION_DATE_DT"] <= cq_end_ts))
+        | ((expanded["GO_LIVE_DATE_DT"] >= cq_start_ts) & (expanded["GO_LIVE_DATE_DT"] <= cq_end_ts))
     )
     expanded["IN_NQ"] = (
-        ((expanded["DECISION_DATE_DT"] >= nq_start) & (expanded["DECISION_DATE_DT"] <= nq_end))
-        | ((expanded["GO_LIVE_DATE_DT"] >= nq_start) & (expanded["GO_LIVE_DATE_DT"] <= nq_end))
+        ((expanded["DECISION_DATE_DT"] >= nq_start_ts) & (expanded["DECISION_DATE_DT"] <= nq_end_ts))
+        | ((expanded["GO_LIVE_DATE_DT"] >= nq_start_ts) & (expanded["GO_LIVE_DATE_DT"] <= nq_end_ts))
     )
     expanded = expanded[expanded["IN_CQ"] | expanded["IN_NQ"]].reset_index(drop=True)
     expanded["RECENTLY_UPDATED_7D"] = (
         expanded["HAS_SPECIALIST_COMMENTS"]
         & expanded["LAST_SPECIALIST_COMMENT_DATE_DT"].notna()
-        & (expanded["LAST_SPECIALIST_COMMENT_DATE_DT"].dt.date >= cutoff_7d)
+        & (expanded["LAST_SPECIALIST_COMMENT_DATE_DT"] >= pd.Timestamp(cutoff_7d))
     )
     expanded["RECENTLY_UPDATED_14D"] = (
         expanded["HAS_SPECIALIST_COMMENTS"]
         & expanded["LAST_SPECIALIST_COMMENT_DATE_DT"].notna()
-        & (expanded["LAST_SPECIALIST_COMMENT_DATE_DT"].dt.date >= cutoff_14d)
+        & (expanded["LAST_SPECIALIST_COMMENT_DATE_DT"] >= pd.Timestamp(cutoff_14d))
     )
 
     all_key_features_pss = sorted(set(
@@ -2240,29 +2240,33 @@ if active_tab == "Services Team Commentry":
         svc_expanded = svc_expanded[svc_expanded["SPECIALIST"].isin(svc_combined_members)].reset_index(drop=True)
         svc_expanded = svc_expanded[~svc_expanded["USE_CASE_STAGE"].isin(["8 - Use Case Lost"])].reset_index(drop=True)
 
-        svc_expanded["LAST_MODIFIED_DATE_DT"] = pd.to_datetime(svc_expanded["LAST_MODIFIED_DATE"], errors="coerce")
-        svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE_DT"] = pd.to_datetime(svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE"], errors="coerce")
-        svc_expanded["DECISION_DATE_DT"] = pd.to_datetime(svc_expanded["DECISION_DATE"], errors="coerce").dt.date
-        svc_expanded["GO_LIVE_DATE_DT"] = pd.to_datetime(svc_expanded["GO_LIVE_DATE"], errors="coerce").dt.date
+        svc_expanded["LAST_MODIFIED_DATE_DT"] = pd.to_datetime(svc_expanded["LAST_MODIFIED_DATE"], errors="coerce", utc=True).dt.tz_convert(None)
+        svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE_DT"] = pd.to_datetime(svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE"], errors="coerce", utc=True).dt.tz_convert(None)
+        svc_expanded["DECISION_DATE_DT"] = pd.to_datetime(svc_expanded["DECISION_DATE"], errors="coerce", utc=True).dt.tz_convert(None)
+        svc_expanded["GO_LIVE_DATE_DT"] = pd.to_datetime(svc_expanded["GO_LIVE_DATE"], errors="coerce", utc=True).dt.tz_convert(None)
         svc_expanded["HAS_IMPLEMENTATION_COMMENTS"] = svc_expanded["HAS_IMPLEMENTATION_COMMENTS"].astype(bool)
 
+        svc_cq_start_ts = pd.Timestamp(svc_cq_start)
+        svc_cq_end_ts = pd.Timestamp(svc_cq_end)
+        svc_nq_start_ts = pd.Timestamp(svc_nq_start)
+        svc_nq_end_ts = pd.Timestamp(svc_nq_end)
         svc_expanded["IN_CQ"] = (
-            ((svc_expanded["DECISION_DATE_DT"] >= svc_cq_start) & (svc_expanded["DECISION_DATE_DT"] <= svc_cq_end))
-            | ((svc_expanded["GO_LIVE_DATE_DT"] >= svc_cq_start) & (svc_expanded["GO_LIVE_DATE_DT"] <= svc_cq_end))
+            ((svc_expanded["DECISION_DATE_DT"] >= svc_cq_start_ts) & (svc_expanded["DECISION_DATE_DT"] <= svc_cq_end_ts))
+            | ((svc_expanded["GO_LIVE_DATE_DT"] >= svc_cq_start_ts) & (svc_expanded["GO_LIVE_DATE_DT"] <= svc_cq_end_ts))
         )
         svc_expanded["IN_NQ"] = (
-            ((svc_expanded["DECISION_DATE_DT"] >= svc_nq_start) & (svc_expanded["DECISION_DATE_DT"] <= svc_nq_end))
-            | ((svc_expanded["GO_LIVE_DATE_DT"] >= svc_nq_start) & (svc_expanded["GO_LIVE_DATE_DT"] <= svc_nq_end))
+            ((svc_expanded["DECISION_DATE_DT"] >= svc_nq_start_ts) & (svc_expanded["DECISION_DATE_DT"] <= svc_nq_end_ts))
+            | ((svc_expanded["GO_LIVE_DATE_DT"] >= svc_nq_start_ts) & (svc_expanded["GO_LIVE_DATE_DT"] <= svc_nq_end_ts))
         )
         svc_expanded["RECENTLY_UPDATED_7D"] = (
             svc_expanded["HAS_IMPLEMENTATION_COMMENTS"]
             & svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE_DT"].notna()
-            & (svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE_DT"].dt.date >= svc_cutoff_7d)
+            & (svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE_DT"] >= pd.Timestamp(svc_cutoff_7d))
         )
         svc_expanded["RECENTLY_UPDATED_14D"] = (
             svc_expanded["HAS_IMPLEMENTATION_COMMENTS"]
             & svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE_DT"].notna()
-            & (svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE_DT"].dt.date >= svc_cutoff_14d)
+            & (svc_expanded["LAST_IMPLEMENTATION_COMMENT_DATE_DT"] >= pd.Timestamp(svc_cutoff_14d))
         )
 
     if not svc_expanded.empty:
