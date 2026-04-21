@@ -1892,6 +1892,31 @@ if active_tab == "PSS-AFE Team Commentry":
     with filter_cols[1]:
         selected_key_features_pss = st.multiselect("Filter by Key Feature", all_key_features_pss, key="afe_bw_key_features")
 
+    activity_cols = st.columns([2, 2, 2])
+    with activity_cols[0]:
+        activity_start = st.date_input("Activity Start Date", value=None, key="afe_activity_start", help="Filter use cases by specialist comment date (start)")
+    with activity_cols[1]:
+        activity_end = st.date_input("Activity End Date", value=None, key="afe_activity_end", help="Filter use cases by specialist comment date (end)")
+    if activity_start or activity_end:
+        mask = pd.Series(True, index=expanded.index)
+        if activity_start:
+            mask = mask & (expanded["LAST_SPECIALIST_COMMENT_DATE_DT"] >= pd.Timestamp(activity_start))
+        if activity_end:
+            mask = mask & (expanded["LAST_SPECIALIST_COMMENT_DATE_DT"] <= pd.Timestamp(activity_end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1))
+        expanded = expanded[mask & expanded["LAST_SPECIALIST_COMMENT_DATE_DT"].notna()].reset_index(drop=True)
+        afe_summary = expanded.groupby("SPECIALIST").agg(
+            total_use_cases=("USE_CASE_ID", "count"),
+            with_comments=("HAS_SPECIALIST_COMMENTS", "sum"),
+            active_7d=("RECENTLY_UPDATED_7D", "sum"),
+            active_14d=("RECENTLY_UPDATED_14D", "sum"),
+            total_eacv=("USE_CASE_EACV", "sum"),
+        ).reset_index()
+        afe_summary["without_comments"] = afe_summary["total_use_cases"] - afe_summary["with_comments"]
+        afe_summary["coverage_pct"] = (afe_summary["with_comments"] / afe_summary["total_use_cases"] * 100).round(1)
+        afe_summary["engagement"] = afe_summary.apply(classify_engagement, axis=1)
+        afe_summary["_sort"] = afe_summary["engagement"].map(engagement_order)
+        afe_summary = afe_summary.sort_values(["_sort", "total_use_cases"], ascending=[True, False]).reset_index(drop=True)
+
     if selected_key_features_pss:
         kf_mask = expanded["KEY_FEATURES"].apply(
             lambda x: any(kf.strip() in selected_key_features_pss for kf in (x or "").split(";"))
