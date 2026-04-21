@@ -492,7 +492,7 @@ def get_dedl_attribution_cte(emp_filter=""):
                COALESCE(NULLIF(ORG.FIRST_LINE_MANAGER, ''), 'Rithesh Makkena') AS FIRST_LINE_MANAGER
         FROM SALES.SE_REPORTING.USE_CASE_ATTRIBUTION AS UCA
         LEFT JOIN SALES.SE_REPORTING.SE_ORG_HIERARCHY_VW AS ORG ON UCA.USER_ID = ORG.SE_ID
-        WHERE UCA.SE_GROUP = 'Partner SE'
+        WHERE UCA.SE_GROUP IN ('AFE', 'Partner SE')
           AND (ORG.FIRST_LINE_MANAGER IN ('David Hare', 'Brendan Tisseur', 'Grant Liu')
               OR ORG.EMPLOYEE_NAME IN ('David Hare', 'Brendan Tisseur', 'Grant Liu'))
         {emp_filter}
