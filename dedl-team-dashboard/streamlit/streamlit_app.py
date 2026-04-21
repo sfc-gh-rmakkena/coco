@@ -1886,17 +1886,17 @@ if active_tab == "PSS-AFE Team Commentry":
 
     st.markdown("")
 
-    filter_cols = st.columns([2, 3])
-    with filter_cols[0]:
-        afe_search = st.text_input("Search AFE", placeholder="Type a name to search...", key="afe_bw_search")
-    with filter_cols[1]:
-        selected_key_features_pss = st.multiselect("Filter by Key Feature", all_key_features_pss, key="afe_bw_key_features")
-
-    activity_cols = st.columns([2, 2, 2])
-    with activity_cols[0]:
-        activity_start = st.date_input("Activity Start Date", value=None, key="afe_activity_start", help="Filter use cases by specialist comment date (start)")
-    with activity_cols[1]:
-        activity_end = st.date_input("Activity End Date", value=None, key="afe_activity_end", help="Filter use cases by specialist comment date (end)")
+    with st.container(border=True):
+        st.markdown("##### 🔍 Activity & Search Filters")
+        ac1, ac2, ac3, ac4 = st.columns([2, 2, 2, 3])
+        with ac1:
+            activity_start = st.date_input("Activity Start Date", value=None, key="afe_activity_start", help="Filter by last specialist comment date (start)")
+        with ac2:
+            activity_end = st.date_input("Activity End Date", value=None, key="afe_activity_end", help="Filter by last specialist comment date (end)")
+        with ac3:
+            afe_search = st.text_input("Search AFE", placeholder="Type a name...", key="afe_bw_search")
+        with ac4:
+            selected_key_features_pss = st.multiselect("Filter by Key Feature", all_key_features_pss, key="afe_bw_key_features")
     if activity_start or activity_end:
         mask = pd.Series(True, index=expanded.index)
         if activity_start:
