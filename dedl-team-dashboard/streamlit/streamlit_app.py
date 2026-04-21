@@ -533,7 +533,7 @@ def build_afe_query(start_date, end_date, emp_filter, feature_filter, key_feat_f
     ),
     comment_history_cte AS (
         SELECT PARENT_ID AS USE_CASE_ID, MAX(CREATED_DATE) AS LAST_SPECIALIST_COMMENT_DATE
-        FROM FIVETRAN.SALESFORCE.VH_DELIVERABLE_HISTORY
+        FROM FIVETRAN.SALESFORCE.USE_CASE_HISTORY
         WHERE FIELD = 'Specialist_Comments__c'
           AND IS_DELETED = FALSE
         GROUP BY PARENT_ID
@@ -726,7 +726,7 @@ def load_afe_use_cases():
         ),
         comment_history_cte AS (
             SELECT PARENT_ID AS USE_CASE_ID, MAX(CREATED_DATE) AS LAST_SPECIALIST_COMMENT_DATE
-            FROM FIVETRAN.SALESFORCE.VH_DELIVERABLE_HISTORY
+            FROM FIVETRAN.SALESFORCE.USE_CASE_HISTORY
             WHERE FIELD = 'Specialist_Comments__c'
               AND IS_DELETED = FALSE
             GROUP BY PARENT_ID
@@ -801,7 +801,7 @@ def load_pss_use_cases(pss_names):
         ),
         comment_history_cte AS (
             SELECT PARENT_ID AS USE_CASE_ID, MAX(CREATED_DATE) AS LAST_SPECIALIST_COMMENT_DATE
-            FROM FIVETRAN.SALESFORCE.VH_DELIVERABLE_HISTORY
+            FROM FIVETRAN.SALESFORCE.USE_CASE_HISTORY
             WHERE FIELD = 'Specialist_Comments__c'
               AND IS_DELETED = FALSE
             GROUP BY PARENT_ID
@@ -878,7 +878,7 @@ def load_services_use_cases(svc_names):
         ),
         comment_history_cte AS (
             SELECT PARENT_ID AS USE_CASE_ID, MAX(CREATED_DATE) AS LAST_IMPLEMENTATION_COMMENT_DATE
-            FROM FIVETRAN.SALESFORCE.VH_DELIVERABLE_HISTORY
+            FROM FIVETRAN.SALESFORCE.USE_CASE_HISTORY
             WHERE FIELD = 'Implementation_Comments__c'
               AND IS_DELETED = FALSE
             GROUP BY PARENT_ID
@@ -1365,7 +1365,7 @@ if active_tab == "Weekly Key Updates":
         ),
         history_cte AS (
             SELECT PARENT_ID AS USE_CASE_ID, MAX(CREATED_DATE) AS LAST_HISTORY_UPDATE_DATE
-            FROM FIVETRAN.SALESFORCE.VH_DELIVERABLE_HISTORY
+            FROM FIVETRAN.SALESFORCE.USE_CASE_HISTORY
             WHERE IS_DELETED = FALSE
               {history_field_clause}
             GROUP BY PARENT_ID
