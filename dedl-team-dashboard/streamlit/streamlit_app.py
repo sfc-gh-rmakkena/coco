@@ -530,12 +530,20 @@ def build_afe_query(start_date, end_date, emp_filter, feature_filter, key_feat_f
         WHERE f_name.index = f_role.index
           AND f_role.value::STRING IN ('SE - Workload FCTO', 'Platform Specialist', 'SE - Partner', 'Partner Account Manager', 'Partner Solutions Architect', 'Services Delivery Manager', 'SE - Enterprise Architect', 'Industry Principal', 'SE - Industry CTO', 'SE - Security FCTO', 'SE - Performance FCTO')
         GROUP BY UC2.USE_CASE_ID
+    ),
+    comment_history_cte AS (
+        SELECT PARENT_ID AS USE_CASE_ID, MAX(CREATED_DATE) AS LAST_SPECIALIST_COMMENT_DATE
+        FROM FIVETRAN.SALESFORCE.VH_DELIVERABLE_HISTORY
+        WHERE FIELD = 'Specialist_Comments__c'
+          AND IS_DELETED = FALSE
+        GROUP BY PARENT_ID
     )
     SELECT UC.USE_CASE_ID, LISTAGG(DISTINCT D.EMPLOYEE_NAME, ', ') WITHIN GROUP (ORDER BY D.EMPLOYEE_NAME) AS ENGINEER,
         MAX(D.FIRST_LINE_MANAGER) AS MANAGER, UC.ACCOUNT_NAME, UC.ACCOUNT_OWNER_NAME AS ACCOUNT_OWNER, UC.ACCOUNT_LEAD_SE_NAME AS ACCOUNT_SE, UC.USE_CASE_NAME,
         UC.USE_CASE_STAGE AS STAGE, UC.USE_CASE_EACV AS EACV, UC.TECHNICAL_USE_CASE, UC.PRIORITIZED_FEATURES AS KEY_FEATURES,
         UC.THEATER_NAME AS THEATER, UC.ACCOUNT_GVP AS GVP, UC.DECISION_DATE, UC.GO_LIVE_DATE, UC.SE_COMMENTS, UC.NEXT_STEPS, UC.LAST_MODIFIED_DATE,
         COALESCE(sp.SPECIALISTS, '') AS SPECIALISTS,
+        ch.LAST_SPECIALIST_COMMENT_DATE,
         ARRAY_TO_STRING(ARRAY_COMPACT(ARRAY_CONSTRUCT(
             IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Workload FCTO%', 'AFE', NULL),
             IFF(ARRAY_TO_STRING(UC.USE_CASE_TEAM_ROLE_LIST, ',') ILIKE '%Platform Specialist%', 'Platform Specialist', NULL),
@@ -546,12 +554,13 @@ def build_afe_query(start_date, end_date, emp_filter, feature_filter, key_feat_f
     FROM DEDL_ATTRIBUTION D
     INNER JOIN MDM.MDM_INTERFACES.DIM_USE_CASE UC ON D.USE_CASE_ID = UC.USE_CASE_ID
     LEFT JOIN specialist_cte sp ON sp.USE_CASE_ID = UC.USE_CASE_ID
+    LEFT JOIN comment_history_cte ch ON ch.USE_CASE_ID = UC.USE_CASE_ID
     WHERE 1=1 {afe_stage_clause}
       AND (UC.DECISION_DATE BETWEEN '{start_date}' AND '{end_date}' OR UC.GO_LIVE_DATE BETWEEN '{start_date}' AND '{end_date}')
       {feature_filter} {key_feat_filter} {gvp_clause} {theater_clause} {account_name_clause}
     GROUP BY UC.USE_CASE_ID, UC.ACCOUNT_NAME, UC.ACCOUNT_OWNER_NAME, UC.ACCOUNT_LEAD_SE_NAME, UC.USE_CASE_NAME, UC.USE_CASE_STAGE, UC.USE_CASE_EACV,
              UC.TECHNICAL_USE_CASE, UC.PRIORITIZED_FEATURES, UC.THEATER_NAME, UC.ACCOUNT_GVP, UC.DECISION_DATE, UC.GO_LIVE_DATE, UC.SE_COMMENTS, UC.NEXT_STEPS, UC.LAST_MODIFIED_DATE,
-             UC.USE_CASE_TEAM_ROLE_LIST, UC.IS_PARTNER_ATTACHED, UC.IS_PS_ENGAGED, sp.SPECIALISTS
+             UC.USE_CASE_TEAM_ROLE_LIST, UC.IS_PARTNER_ATTACHED, UC.IS_PS_ENGAGED, sp.SPECIALISTS, ch.LAST_SPECIALIST_COMMENT_DATE
     ORDER BY UC.USE_CASE_EACV DESC NULLS LAST
     """
 
@@ -1076,7 +1085,25 @@ if active_tab == "AFE All Engagements":
     
     if not df_all.empty:
         df_all["SFDC"] = df_all["USE_CASE_ID"].apply(lambda uid: f"{SFDC_BASE}/{uid}/view" if uid else "")
-    
+        if "LAST_SPECIALIST_COMMENT_DATE" in df_all.columns:
+            df_all["LAST_SPECIALIST_COMMENT_DATE_DT"] = pd.to_datetime(df_all["LAST_SPECIALIST_COMMENT_DATE"], errors="coerce", utc=True).dt.tz_convert(None)
+
+    with st.container(border=True):
+        st.markdown("##### 🔍 Activity & Search Filters")
+        ac1, ac2 = st.columns([2, 2])
+        with ac1:
+            afe_all_activity_start = st.date_input("Activity Start Date", value=None, key="afe_all_activity_start", help="Filter by last specialist comment date (start)")
+        with ac2:
+            afe_all_activity_end = st.date_input("Activity End Date", value=None, key="afe_all_activity_end", help="Filter by last specialist comment date (end)")
+
+    if (afe_all_activity_start or afe_all_activity_end) and not df_all.empty and "LAST_SPECIALIST_COMMENT_DATE_DT" in df_all.columns:
+        mask = pd.Series(True, index=df_all.index)
+        if afe_all_activity_start:
+            mask = mask & (df_all["LAST_SPECIALIST_COMMENT_DATE_DT"] >= pd.Timestamp(afe_all_activity_start))
+        if afe_all_activity_end:
+            mask = mask & (df_all["LAST_SPECIALIST_COMMENT_DATE_DT"] <= pd.Timestamp(afe_all_activity_end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1))
+        df_all = df_all[mask & df_all["LAST_SPECIALIST_COMMENT_DATE_DT"].notna()].reset_index(drop=True)
+
     display_metrics(df_all)
     display_stage_chart(df_all, "All Use Cases by Stage")
     
